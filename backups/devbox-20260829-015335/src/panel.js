@@ -4,6 +4,8 @@
   let el = null;
   let failures = [];
   let running = false;
+  // Live tallies for the progress bar and status line. Reset at each run start.
+  let counts = { saved: 0, skipped: 0, found: 0, failed: 0 };
 
   const HTML = [
     '<div class="tgmd-head">',
@@ -13,6 +15,7 @@
     '<div class="tgmd-body">',
     '  <button class="tgmd-btn" data-act="all">Download all media in this chat</button>',
     '  <button class="tgmd-btn" data-act="select">Select media&hellip;</button>',
+    '  <button class="tgmd-btn tgmd-ghost" data-act="count">Count media in this chat</button>',
     '  <div class="tgmd-status">Idle</div>',
     '  <div class="tgmd-bar"><div class="tgmd-fill"></div></div>',
     '  <div class="tgmd-controls">',
@@ -67,8 +70,19 @@
     $('[data-act="stop"]').disabled = !on;
     $('[data-act="all"]').disabled = on;
     $('[data-act="select"]').disabled = on;
+    $('[data-act="count"]').disabled = on;
     $('[data-act="pause"]').textContent = 'Pause';
-    if (on) { status('Starting…'); fill(0); }
+    if (on) { counts = { saved: 0, skipped: 0, found: 0, failed: 0 }; status('Starting…'); fill(0); }
+  }
+
+  // Bar and status reflect the whole run, not one file — under concurrency
+  // several items download at once, so a single-file byte bar is meaningless.
+  function renderProgress() {
+    const completed = counts.saved + counts.skipped + counts.failed;
+    const denom = Math.max(counts.found, completed, 1);
+    fill(completed / denom);
+    status(counts.saved + ' saved · ' + counts.skipped + ' skipped · '
+           + counts.failed + ' failed · ' + counts.found + ' found');
   }
 
   function showFailures() {
@@ -91,14 +105,12 @@
   }
 
   // --------------------------------------------------------------- actions
-  async function runWith(tileKeys, force) {
+  async function runWith(tileKeys) {
     failures = [];
     showFailures();
     setRunning(true);
     try {
-      await root.TGMD.run.start({
-        tileKeys: tileKeys, force: !!force, onEvent: handleEvent
-      });
+      await root.TGMD.run.start({ tileKeys: tileKeys, onEvent: handleEvent });
     } catch (e) {
       status('Error: ' + e.message);
       logLine('ERROR ' + e.message);
@@ -118,10 +130,28 @@
       const keys = root.TGMD.select.chosen();
       if (!keys.size) return;
       root.TGMD.select.toggle();
-      await runWith(keys, true);
+      await runWith(keys);
 
     } else if (act === 'select') {
       root.TGMD.select.toggle();
+
+    } else if (act === 'count') {
+      // A full scroll of the grid, no downloads — an explicit action, because
+      // pre-counting every run would double the scrolling on large chats.
+      if (running) { status('Stop the run before counting.'); return; }
+      btn.disabled = true;
+      status('Counting… scrolling the whole chat');
+      try {
+        const n = await root.TGMD.run.enumerate({
+          onCount: (c) => status('Counting… ' + c + ' found so far')
+        });
+        status(n + ' media items in this chat');
+        logLine('counted ' + n + ' media items');
+      } catch (e) {
+        status('Count error: ' + e.message);
+      } finally {
+        btn.disabled = false;
+      }
 
     } else if (act === 'pause') {
       const pausing = btn.textContent === 'Pause';
@@ -177,12 +207,12 @@
 
   // ---------------------------------------------------------------- events
   function handleEvent(ev) {
-    if (ev.type === 'progress' && ev.enumerated != null) {
-      status('Working… ' + ev.enumerated + ' found so far');
-    } else if (ev.type === 'progress' && ev.total) {
-      fill(ev.received / ev.total);
+    if (ev.type === 'progress') {
+      if (ev.enumerated != null) counts.found = ev.enumerated;
+      renderProgress();
     } else if (ev.type === 'item') {
       if (ev.ok) {
+        if (ev.skipped) counts.skipped++; else counts.saved++;
         let note = '';
         // Make the origin of each download visible: a save dialog on a file
         // that is not ours means the prompt is page-initiated.
@@ -192,11 +222,13 @@
         }
         logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '') + note);
       } else {
+        counts.failed++;
         logLine('FAILED item ' + (ev.index + 1) + ': ' + ev.error);
         if (ev.mediaState) logLine('        state: ' + JSON.stringify(ev.mediaState));
         failures.push(ev);
       }
       showFailures();
+      renderProgress();
     } else if (ev.type === 'done') {
       const s = ev.summary;
       status('Done — ' + s.saved + ' saved, ' + s.skipped + ' already had, ' + s.failed.length + ' failed');

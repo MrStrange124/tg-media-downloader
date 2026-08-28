@@ -113,38 +113,39 @@
   }
 
   // -------------------------------------------------------- single download
-  async function downloadCurrent(opts) {
+  //
+  // Downloads a specific descriptor captured while its viewer was open. The run
+  // engine passes the descriptor explicitly because, under the pipeline, the
+  // viewer has already moved on to later tiles by the time this executes.
+  //   opts.messageKey     — precomputed content key, skips re-hashing the URL
+  //   opts.prefetchedBlob  — a blob: image already materialised before its
+  //                          viewer closed (blob: URLs die with the viewer)
+  //   opts.chatId/chatTitle — captured once at run start, stable for the run
+  async function downloadDescriptor(desc, opts) {
     opts = opts || {};
-    const desc = selectors.viewer.descriptor();
-    if (!desc) return { ok: false, error: 'no media open in the viewer' };
+    if (!desc) return { ok: false, error: 'no media descriptor' };
 
-    const chatId = selectors.chat.id();
+    const chatId = opts.chatId || selectors.chat.id();
     if (!chatId) return { ok: false, error: 'could not determine chat id' };
 
-    const messageKey = await dedupe.contentKey(desc.url);
+    const messageKey = opts.messageKey || await dedupe.contentKey(desc.url);
     const record = dedupe.recordKey(chatId, messageKey);
 
     const seen = await chrome.storage.local.get(record);
-    const previous = seen[record];
-    if (previous && !opts.force) {
-      // Only trust the record when it names the same kind of file we are about
-      // to save. If a key ever collided across kinds, silently skipping would
-      // drop the item entirely; re-downloading is the safe direction to err in.
-      const wantExt = naming.extFromMime(desc.mime);
-      const hadExt = String(previous).split('.').pop().toLowerCase();
-      if (hadExt === wantExt) return { ok: true, skipped: true, filename: previous };
+    if (seen[record] && !opts.force) {
+      return { ok: true, skipped: true, filename: seen[record] };
     }
 
     const folder = await subfolder();
     const filename = naming.buildFilename({
-      chatTitle: selectors.chat.title(),
+      chatTitle: opts.chatTitle || selectors.chat.title(),
       date: new Date(),
       messageKey: messageKey,
       originalName: desc.originalName,
       mime: desc.mime
     }).replace(/^Telegram\//, folder + '/');
 
-    const blob = await fetchMedia(desc, opts);
+    const blob = opts.prefetchedBlob || await fetchMedia(desc, opts);
     const downloadId = await saveBlob(blob, filename);
 
     // Record who Brave thinks started this download. If a save dialog appears
@@ -157,6 +158,14 @@
     rec[record] = filename;
     await chrome.storage.local.set(rec);
     return { ok: true, filename: filename, bytes: blob.size, audit: audit };
+  }
+
+  // Downloads whatever is open in the viewer right now — the Ctrl+Shift+D
+  // hotkey and diagnostics use this.
+  async function downloadCurrent(opts) {
+    const desc = selectors.viewer.descriptor();
+    if (!desc) return { ok: false, error: 'no media open in the viewer' };
+    return downloadDescriptor(desc, opts);
   }
 
   // ------------------------------------------------------------- run engine
@@ -187,18 +196,9 @@
     const budget = OPEN_TIMEOUT[kind] || OPEN_TIMEOUT.image;
     let last = null;
 
-    let stable = null;
     while (Date.now() - started < budget) {
       const d = selectors.viewer.descriptor();
-      if (d && d.url) {
-        // Require the same URL on two consecutive polls. A click can land while
-        // the viewer is still showing the previous item, and accepting that
-        // would download the wrong media -- or dedupe against it and skip.
-        if (stable === d.url) return d;
-        stable = d.url;
-      } else {
-        stable = null;
-      }
+      if (d && d.url) return d;
       last = selectors.mediaState();
       // The click never landed at all — fail in seconds rather than burning a
       // three-minute video budget waiting on a viewer that never opened.
@@ -245,16 +245,55 @@
     opts = opts || {};
     const onEvent = opts.onEvent || function () {};
     const wantKeys = opts.tileKeys || null;
-    // Ticking tiles by hand is an explicit request for those files, so a
-    // selection run ignores the downloaded-already history.
-    const force = !!opts.force;
     if (state.running) throw new Error('a run is already in progress');
     state.running = true;
     state.paused = false;
     state.abort = new AbortController();
 
+    // Captured once — the chat cannot change during a run, and reading these
+    // per item would race a navigation while downloads are still in flight.
+    const chatId = selectors.chat.id();
+    const chatTitle = selectors.chat.title();
+
+    // The producer opens tiles serially (one shared viewer); the pool downloads
+    // up to `concurrency` of them at once, so a large video downloads while the
+    // next tiles are being opened. concurrency:1 reproduces the old sequential
+    // behaviour exactly.
+    const settings = (await chrome.storage.local.get('settings')).settings || {};
+    const concurrency = Math.min(3, Math.max(1, (settings.concurrency | 0) || 1));
+
     const summary = { total: 0, saved: 0, skipped: 0, failed: [] };
     const done = new Set();
+
+    const pool = root.TGMD.pool.createPool({
+      concurrency: concurrency,
+      onResult: function (out) {
+        if (out.res.skipped) summary.skipped++; else summary.saved++;
+        onEvent({ type: 'item', index: out.index, ok: true,
+                  filename: out.res.filename, skipped: !!out.res.skipped, audit: out.res.audit });
+      },
+      onError: function (err) {
+        const idx = (err && err.index != null) ? err.index : -1;
+        const msg = String((err && err.message) || err);
+        summary.failed.push({ filename: 'item ' + (idx + 1), error: msg });
+        onEvent({ type: 'item', index: idx, ok: false, error: msg });
+      }
+    });
+
+    // The download half of one item, ready to hand to the pool. Any throw is
+    // tagged with its index so onError can report which item failed.
+    function makeTask(desc, messageKey, prefetchedBlob, index) {
+      return async function () {
+        try {
+          const res = await downloadDescriptor(desc, {
+            chatId: chatId, chatTitle: chatTitle, messageKey: messageKey,
+            prefetchedBlob: prefetchedBlob, signal: state.abort.signal
+          });
+          if (!res.ok) throw new Error(res.error || 'download failed');
+          return { res: res, index: index };
+        } catch (e) { if (e.index == null) e.index = index; throw e; }
+      };
+    }
 
     try {
       // The tiles' grid div does not scroll; its .custom-scroll ancestor does.
@@ -290,50 +329,65 @@
 
           done.add(key);
           progressed = true;
-          summary.total++;
-          onEvent({ type: 'progress', enumerated: summary.total });
 
+          // --- serial stage: open the viewer, capture the descriptor ---
           let desc = null;
           try {
             desc = await openTile(tile, selectors.grid.tileKind(tile));
           } catch (e) {
+            const index = summary.total++;
+            onEvent({ type: 'progress', enumerated: summary.total });
             const msg = String(e && e.message || e);
             summary.failed.push({ filename: 'item ' + summary.total, error: msg });
-            onEvent({ type: 'item', index: summary.total - 1, ok: false,
+            onEvent({ type: 'item', index: index, ok: false,
                       error: msg, mediaState: e.mediaState || null });
+            await selectors.viewer.close();
+            await sleep(200);
+            continue;
           }
-          if (desc) {
+
+          // In-run dedupe: the same forwarded media can sit on two tiles.
+          const contentK = await dedupe.contentKey(desc.url);
+          if (!pool.reserve((chatId || '') + ':' + contentK)) {
+            await selectors.viewer.close();
+            await sleep(150);
+            continue;
+          }
+
+          const index = summary.total++;
+          onEvent({ type: 'progress', enumerated: summary.total });
+
+          // A blob: URL (some images) lives and dies with its viewer, so it must
+          // be materialised before we close. Stream/SW URLs (all videos) stay
+          // fetchable afterwards, which is exactly what lets the pool download
+          // them while the producer moves on.
+          let prefetchedBlob = null;
+          if (desc.url.startsWith('blob:')) {
             try {
-              const res = await downloadCurrent({
-                force: force,
-                signal: state.abort.signal,
-                onProgress: (p) => onEvent({
-                  type: 'progress', index: summary.total - 1,
-                  received: p.received, total: p.total
-                })
-              });
-              if (!res.ok) throw new Error(res.error);
-              if (res.skipped) summary.skipped++; else summary.saved++;
-              onEvent({
-                type: 'item', index: summary.total - 1, ok: true,
-                filename: res.filename, skipped: !!res.skipped, audit: res.audit
-              });
+              prefetchedBlob = await fetchMedia(desc, { signal: state.abort.signal });
             } catch (e) {
               const msg = String(e && e.message || e);
               summary.failed.push({ filename: 'item ' + summary.total, error: msg });
-              onEvent({ type: 'item', index: summary.total - 1, ok: false, error: msg });
+              onEvent({ type: 'item', index: index, ok: false, error: msg });
+              await selectors.viewer.close();
+              await sleep(200);
+              continue;
             }
           }
 
           // A viewer left open swallows the next tile click.
           const closed = await selectors.viewer.close();
           if (!closed) {
-            onEvent({ type: 'item', index: summary.total - 1, ok: false,
+            onEvent({ type: 'item', index: index, ok: false,
                       error: 'could not close the media viewer — stopping' });
             state.running = false;
             break;
           }
-          await sleep(250);
+
+          // --- concurrent stage: run() parks here when `concurrency` items are
+          // already downloading, then returns so we open the next tile. ---
+          await pool.run(makeTask(desc, contentK, prefetchedBlob, index));
+          await sleep(120);
         }
 
         if (wantKeys && done.size >= wantKeys.size) break;
@@ -354,7 +408,11 @@
         }
       }
     } finally {
+      // Stop feeding the pool, then wait for downloads already in flight. On a
+      // user stop these were aborted (run.stop() fired the AbortController) and
+      // reject quickly; on a normal finish they run to completion.
       state.running = false;
+      await pool.drain();
       await selectors.viewer.close();
       onEvent({ type: 'done', summary: summary, audit: await auditRecent() });
     }
