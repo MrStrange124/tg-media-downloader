@@ -66,3 +66,42 @@ document.getElementById('copydiag').addEventListener('click', async () => {
   await navigator.clipboard.writeText(formatReport(got['diag:last']));
   log('\n(report copied to clipboard)');
 });
+
+// ------------------------------------------------------------------ settings
+(async () => {
+  const got = await chrome.storage.local.get('settings');
+  const s = got.settings || { concurrency: 2, subfolder: 'Telegram' };
+  document.getElementById('subfolder').value = s.subfolder || 'Telegram';
+  document.getElementById('concurrency').value = s.concurrency || 2;
+})();
+
+document.getElementById('savesettings').addEventListener('click', async () => {
+  const subfolder = document.getElementById('subfolder').value.trim() || 'Telegram';
+  const raw = parseInt(document.getElementById('concurrency').value, 10);
+  const concurrency = Math.min(3, Math.max(1, isNaN(raw) ? 2 : raw));
+  document.getElementById('concurrency').value = concurrency;
+  await chrome.storage.local.set({ settings: { subfolder: subfolder, concurrency: concurrency } });
+  log('saved — subfolder "' + subfolder + '", concurrency ' + concurrency);
+});
+
+document.getElementById('clearhistory').addEventListener('click', async () => {
+  out.textContent = '';
+  try {
+    const tabId = await activeTabId();
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: () => {
+        const m = location.hash.replace('#', '').match(/^-?\d+/);
+        return m ? m[0] : null;
+      }
+    });
+    const chatId = results && results[0] && results[0].result;
+    if (!chatId) { log('no chat open'); return; }
+    const all = await chrome.storage.local.get(null);
+    const keys = Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0);
+    await chrome.storage.local.remove(keys);
+    log('cleared ' + keys.length + ' records for chat ' + chatId);
+  } catch (e) {
+    log('FAILED — ' + e.message);
+  }
+});
