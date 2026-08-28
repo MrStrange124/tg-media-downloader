@@ -385,8 +385,68 @@
     return Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0).length;
   }
 
+  // ------------------------------------------------- save-prompt diagnosis
+  //
+  // Every production download passes saveAs:false, and Brave's
+  // prompt_for_download is unset, yet a file picker appears. Rather than guess
+  // which argument provokes it, vary one thing at a time and time each one:
+  // anything past ~1.5s stopped to ask the user.
+  const PROBE_VARIANTS = [
+    { label: 'A  subdir + uniquify + blob   (what downloads use now)',
+      filename: 'TGMDProbe/a-subdir.txt',    conflictAction: 'uniquify',  kind: 'blob' },
+    { label: 'B  flat filename + uniquify + blob',
+      filename: 'tgmd-probe-b-flat.txt',     conflictAction: 'uniquify',  kind: 'blob' },
+    { label: 'C  subdir + overwrite + blob',
+      filename: 'TGMDProbe/c-overwrite.txt', conflictAction: 'overwrite', kind: 'blob' },
+    { label: 'D  no filename at all + blob',
+      filename: null,                        conflictAction: 'uniquify',  kind: 'blob' },
+    { label: 'E  flat filename + data: URL',
+      filename: 'tgmd-probe-e-data.txt',     conflictAction: 'uniquify',  kind: 'data' }
+  ];
+
+  async function probePrompt(onLine) {
+    const say = onLine || function () {};
+    const payload = 'A'.repeat(1024);
+    const blob = new Blob([payload], { type: 'text/plain' });
+    const results = [];
+
+    say('Probing… a picker may appear for each of the 5 tests.');
+    say('Save or Cancel each one — either answers the question.');
+
+    for (const v of PROBE_VARIANTS) {
+      const url = v.kind === 'data'
+        ? 'data:text/plain;base64,' + btoa(payload)
+        : URL.createObjectURL(blob);
+      let r;
+      try {
+        r = await chrome.runtime.sendMessage({
+          type: 'TGMD_PROBE', url: url,
+          filename: v.filename, conflictAction: v.conflictAction
+        });
+      } catch (e) {
+        r = { ok: false, error: String(e.message || e) };
+      }
+      if (v.kind === 'blob') setTimeout(() => URL.revokeObjectURL(url), 60000);
+
+      const ms = r && r.ms;
+      const verdict = !r || !r.ok ? 'ERROR ' + (r && r.error)
+        : r.settled === 'timeout' ? 'STILL WAITING after 60s'
+        : ms > 1500 ? 'PROMPTED (' + Math.round(ms / 100) / 10 + 's)'
+        : 'no prompt (' + ms + 'ms)';
+      say(v.label + '\n      -> ' + verdict);
+      results.push({ variant: v.label, ms: ms, settled: r && r.settled, verdict: verdict });
+    }
+
+    const clean = results.filter((x) => /^no prompt/.test(x.verdict));
+    say(clean.length
+      ? 'RESULT: ' + clean.length + ' variant(s) saved with no prompt.'
+      : 'RESULT: every variant prompted — the trigger is not in our arguments.');
+    return results;
+  }
+
   root.TGMD.core = {
     downloadCurrent: downloadCurrent,
+    probePrompt: probePrompt,
     clearChatHistory: clearChatHistory,
     historyCount: historyCount,
     fetchMedia: fetchMedia,

@@ -56,6 +56,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // Timed download probe. A blob download of 1 KB completes in milliseconds
+  // unless Chromium stops to ask the user where to put it, so elapsed time is
+  // a direct, objective measurement of whether a file picker appeared.
+  if (msg && msg.type === 'TGMD_PROBE') {
+    probeOne(msg)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
   if (msg && msg.type === 'TGMD_INJECT_MAIN') {
     chrome.scripting.executeScript({
       target: { tabId: sender.tab.id },
@@ -117,3 +127,38 @@ chrome.downloads.onChanged.addListener(async (delta) => {
     inFlight.delete(delta.id);
   }
 });
+
+// ------------------------------------------------------ save-prompt probe
+function waitForSettled(id, timeoutMs) {
+  return new Promise((resolve) => {
+    const finish = (r) => {
+      chrome.downloads.onChanged.removeListener(handler);
+      clearTimeout(timer);
+      resolve(r);
+    };
+    const timer = setTimeout(() => finish({ settled: 'timeout' }), timeoutMs);
+    const handler = (delta) => {
+      if (delta.id !== id || !delta.state) return;
+      if (delta.state.current === 'complete') finish({ settled: 'complete' });
+      if (delta.state.current === 'interrupted') {
+        finish({ settled: 'interrupted', reason: delta.error && delta.error.current });
+      }
+    };
+    chrome.downloads.onChanged.addListener(handler);
+  });
+}
+
+async function probeOne(msg) {
+  const opts = { url: msg.url, saveAs: false, conflictAction: msg.conflictAction };
+  if (msg.filename) opts.filename = msg.filename;
+
+  const t0 = Date.now();
+  let id;
+  try {
+    id = await chrome.downloads.download(opts);
+  } catch (e) {
+    return { ok: false, error: String(e.message || e), ms: Date.now() - t0 };
+  }
+  const settled = await waitForSettled(id, 60000);
+  return { ok: true, id, ms: Date.now() - t0, ...settled };
+}

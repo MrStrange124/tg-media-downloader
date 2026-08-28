@@ -26,6 +26,7 @@
     '  </div>',
     '  <details class="tgmd-log"><summary>Log</summary><pre></pre></details>',
     '  <button class="tgmd-link" data-act="clearhistory">Clear history for this chat</button>',
+    '  <button class="tgmd-link" data-act="probeprompt">Diagnose the save prompt</button>',
     '</div>'
   ].join('\n');
 
@@ -151,6 +152,19 @@
         status('Error: ' + e.message);
       }
       refreshHistoryLabel();
+
+    } else if (act === 'probeprompt') {
+      if (running) { status('Stop the run before probing.'); return; }
+      $('.tgmd-log').open = true;
+      $('.tgmd-log pre').textContent = '';
+      status('Probing the save prompt…');
+      try {
+        await root.TGMD.core.probePrompt(logLine);
+        status('Probe finished — see the log');
+      } catch (e) {
+        status('Probe error: ' + e.message);
+        logLine('ERROR ' + e.message);
+      }
 
     } else if (act === 'retry') {
       // Resume makes this safe: saved items are skipped, so re-running
