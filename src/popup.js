@@ -105,3 +105,24 @@ document.getElementById('clearhistory').addEventListener('click', async () => {
     log('FAILED — ' + e.message);
   }
 });
+
+// ------------------------------------------------------- walk diagnostics
+document.getElementById('runwalk').addEventListener('click', async () => {
+  out.textContent = 'Probing the grid and viewer — takes about 10 seconds…\n';
+  try {
+    const tabId = await activeTabId();
+    await chrome.storage.local.remove('diag:walk');
+    await chrome.scripting.executeScript({ target: { tabId: tabId }, files: ['src/diag-walk.js'] });
+    let report = null;
+    for (let i = 0; i < 120 && !report; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      const got = await chrome.storage.local.get('diag:walk');
+      report = got['diag:walk'];
+    }
+    out.textContent = formatReport(report);
+    await navigator.clipboard.writeText(formatReport(report)).catch(() => {});
+    out.textContent += '\n(copied to clipboard)';
+  } catch (e) {
+    out.textContent = 'FAILED — ' + e.message;
+  }
+});
