@@ -27,17 +27,12 @@
 .tgmd-log pre { max-height: 140px; overflow: auto; background: #141414;
   padding: 6px; border-radius: 4px; font-size: 11px; color: #ccc; }
 
-.tgmd-check {
-  position: absolute; top: 6px; left: 6px; width: 20px; height: 20px;
-  border: 2px solid #fff; border-radius: 4px; background: rgba(0,0,0,.35);
-  cursor: pointer; z-index: 10;
+/* Selection feedback is a class on the tile itself. It must work when the
+   tile IS an <img> — a void element that cannot render injected children,
+   which is why the old appended-checkbox overlay was invisible. */
+.tgmd-selecting img, .tgmd-selecting video { cursor: pointer; }
+.tgmd-selected {
+  outline: 4px solid #2d7ff9 !important;
+  outline-offset: -4px !important;
+  filter: brightness(0.65) saturate(1.2) !important;
 }
-.tgmd-check.tgmd-checked { background: #2d7ff9; border-color: #2d7ff9; }
-.tgmd-check.tgmd-checked::after {
-  content: '\2713'; color: #fff; font-size: 14px; line-height: 20px;
-  display: block; text-align: center;
-}
-
-.tgmd-popup hr { border: 0; border-top: 1px solid #ddd; margin: 12px 0 8px; }
-.tgmd-popup label { display: block; margin: 8px 0 2px; font-size: 11px; color: #666; }
-.tgmd-popup input { width: 100%; padding: 5px; box-sizing: border-box; font: inherit; }

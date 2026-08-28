@@ -126,3 +126,27 @@ document.getElementById('runwalk').addEventListener('click', async () => {
     out.textContent = 'FAILED — ' + e.message;
   }
 });
+
+// -------------------------------------------------------- download audit
+document.getElementById('auditdl').addEventListener('click', async () => {
+  out.textContent = '';
+  try {
+    const res = await chrome.runtime.sendMessage({ type: 'TGMD_DOWNLOAD_AUDIT' });
+    if (!res || !res.ok) { log('FAILED — ' + (res && res.error)); return; }
+    const lines = ['this extension id: ' + res.self, ''];
+    for (const d of res.items) {
+      lines.push((d.fromOurExtension ? '[OURS]     ' : '[NOT OURS] ') +
+                 (d.filename || '').split(/[\\/]/).pop());
+      lines.push('   byExtensionId: ' + (d.byExtensionId || '<none — page-initiated>'));
+      lines.push('   state: ' + d.state + '   danger: ' + d.danger +
+                 '   mime: ' + (d.mime || '-') + (d.error ? '   error: ' + d.error : ''));
+      lines.push('   url: ' + d.urlKind);
+      lines.push('');
+    }
+    out.textContent = lines.join('\n');
+    await navigator.clipboard.writeText(out.textContent).catch(() => {});
+    out.textContent += '(copied to clipboard)';
+  } catch (e) {
+    log('FAILED — ' + e.message);
+  }
+});

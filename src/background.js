@@ -11,6 +11,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep the message channel open for the async response
   }
 
+  // Reports what Brave actually recorded about recent downloads. The decisive
+  // field is byExtensionId: if a download that prompted has none, it was
+  // page-initiated and did not come from this extension at all.
+  if (msg && msg.type === 'TGMD_DOWNLOAD_AUDIT') {
+    chrome.downloads.search({ limit: 10, orderBy: ['-startTime'] })
+      .then((items) => sendResponse({
+        ok: true,
+        self: chrome.runtime.id,
+        items: items.map((d) => ({
+          id: d.id,
+          filename: d.filename,
+          state: d.state,
+          danger: d.danger,
+          mime: d.mime,
+          error: d.error,
+          byExtensionId: d.byExtensionId || null,
+          byExtensionName: d.byExtensionName || null,
+          fromOurExtension: d.byExtensionId === chrome.runtime.id,
+          urlKind: !d.url ? null : (d.url.startsWith('blob:') ? 'blob' : d.url.slice(0, 40)),
+          startTime: d.startTime
+        }))
+      }))
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
   if (msg && msg.type === 'TGMD_INJECT_MAIN') {
     chrome.scripting.executeScript({
       target: { tabId: sender.tab.id },

@@ -2,9 +2,14 @@
   'use strict';
 
   let active = false;
+  let observer = null;
+  let clickHook = null;
+
   // Keys, not elements: the grid is virtualised, so an element selected before
   // scrolling may be detached by the time the run starts.
   const chosen = new Set();
+
+  const sel = () => root.TGMD.selectors;
 
   function announce() {
     const btn = document.querySelector(
@@ -22,65 +27,89 @@
     }
   }
 
-  function decorate() {
-    for (const tile of root.TGMD.selectors.grid.tiles()) {
-      if (!tile.appendChild) continue;                       // e.g. a bare <img>
-      if (tile.querySelector && tile.querySelector('.tgmd-check')) continue;
-
-      const key = root.TGMD.selectors.grid.tileKey(tile);
+  // Paint every live tile according to whether its key is chosen. Called after
+  // any grid mutation because recycling drops the class.
+  function repaint() {
+    for (const tile of sel().grid.tiles()) {
+      const key = sel().grid.tileKey(tile);
       if (!key) continue;
-
-      const box = document.createElement('div');
-      box.className = 'tgmd-check';
-      if (chosen.has(key)) box.classList.add('tgmd-checked');
-
-      box.addEventListener('click', (e) => {
-        e.stopPropagation();
-        e.preventDefault();
-        const on = !chosen.has(key);
-        if (on) chosen.add(key); else chosen.delete(key);
-        box.classList.toggle('tgmd-checked', on);
-        announce();
-      }, true);
-
-      try {
-        if (getComputedStyle(tile).position === 'static') tile.style.position = 'relative';
-      } catch (e) { /* detached */ }
-      tile.appendChild(box);
+      tile.classList.toggle('tgmd-selected', chosen.has(key));
     }
     announce();
   }
 
-  // The grid recycles nodes as you scroll, so freshly rendered tiles need
-  // decorating too. Only runs while selection mode is on.
-  let observer = null;
-  function watch(on) {
-    if (on) {
-      const c = root.TGMD.selectors.grid.container();
-      if (!c || observer) return;
-      observer = new MutationObserver(() => { if (active) decorate(); });
-      observer.observe(c, { childList: true, subtree: true });
-    } else if (observer) {
-      observer.disconnect();
-      observer = null;
+  // Resolve whatever was clicked to one of the grid's tiles.
+  function tileFromEvent(e) {
+    const tiles = sel().grid.tiles();
+    for (const t of tiles) {
+      if (t === e.target || t.contains(e.target)) return t;
     }
+    // The tile may be an ancestor of the click target's media element.
+    const media = e.target.closest && e.target.closest('img, video');
+    if (media) {
+      for (const t of tiles) {
+        if (t === media || t.contains(media)) return t;
+      }
+    }
+    return null;
   }
 
-  function undecorate() {
-    for (const b of document.querySelectorAll('.tgmd-check')) b.remove();
-    chosen.clear();
+  function onGridClick(e) {
+    if (!active) return;
+    const tile = tileFromEvent(e);
+    if (!tile) return;
+    const key = sel().grid.tileKey(tile);
+    if (!key) return;
+
+    // Swallow the click so Telegram does not open the media viewer.
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    if (chosen.has(key)) chosen.delete(key); else chosen.add(key);
+    tile.classList.toggle('tgmd-selected', chosen.has(key));
     announce();
+  }
+
+  function attach() {
+    const c = sel().grid.container();
+    if (!c) return false;
+    clickHook = onGridClick;
+    c.addEventListener('click', clickHook, true);   // capture, before Telegram
+    observer = new MutationObserver(() => { if (active) repaint(); });
+    observer.observe(c, { childList: true, subtree: true });
+    document.body.classList.add('tgmd-selecting');
+    repaint();
+    return true;
+  }
+
+  function detach() {
+    const c = sel().grid.container();
+    if (c && clickHook) c.removeEventListener('click', clickHook, true);
+    clickHook = null;
+    if (observer) { observer.disconnect(); observer = null; }
+    for (const t of document.querySelectorAll('.tgmd-selected')) {
+      t.classList.remove('tgmd-selected');
+    }
+    document.body.classList.remove('tgmd-selecting');
   }
 
   function toggle() {
-    active = !active;
-    if (active) { decorate(); watch(true); }
-    else { watch(false); undecorate(); }
+    if (!active) {
+      if (!attach()) return;
+      active = true;
+    } else {
+      active = false;
+      detach();
+      chosen.clear();
+    }
+    announce();
   }
 
   root.TGMD.select = {
     toggle: toggle,
     chosen: () => new Set(chosen),
+    clear: () => { chosen.clear(); repaint(); },
     get active() { return active; }
   };
 })(typeof globalThis !== 'undefined' ? globalThis : self);
