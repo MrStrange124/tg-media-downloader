@@ -185,6 +185,18 @@
       const s = ev.summary;
       status('Done — ' + s.saved + ' saved, ' + s.skipped + ' already had, ' + s.failed.length + ' failed');
       fill(1);
+      // Answers the save-prompt question without anyone having to run a
+      // separate audit: it names whoever Brave credits for these downloads.
+      if (ev.audit) {
+        if (!ev.audit.foreign.length) {
+          logLine('AUDIT: all ' + ev.audit.checked + ' recent downloads came from this extension '
+                  + '(saveAs:false) — a save dialog here is not ours to suppress.');
+        } else {
+          logLine('AUDIT: ' + ev.audit.foreign.length + ' of ' + ev.audit.checked
+                  + ' recent downloads were started by: ' + ev.audit.foreign.join(', ')
+                  + ' — THESE are what prompt you.');
+        }
+      }
     }
   }
 

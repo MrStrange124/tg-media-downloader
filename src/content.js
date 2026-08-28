@@ -157,8 +157,8 @@
   //
   // The shared-media grid is virtualised: scrolling recycles tile elements out
   // of the DOM. So we never hold element references across a scroll. Identity
-  // is the tile's thumbnail URL — a string that stays correct even when the
-  // underlying node is reused for a different item.
+  // is the tile's own id (`shared-media` + `message-<id>`, from Media.tsx),
+  // which stays correct even when the underlying node is reused.
   //
   // Navigation is click-per-tile rather than ArrowRight. ArrowRight walks every
   // media item in the chat, which is simply wrong for a selected subset, and it
@@ -169,21 +169,53 @@
 
   const tileKey = (t) => selectors.grid.tileKey(t);
 
-  async function openTile(tile) {
+  // Telegram resolves a video's URL asynchronously. Until it does,
+  // MediaViewerContent paints a poster-only <video> carrying no src at all, so
+  // a short deadline reports "no URL" for a video that is merely still
+  // loading. Photos are ready almost immediately; videos get far longer.
+  const OPEN_TIMEOUT = { image: 20000, gif: 60000, video: 180000 };
+
+  async function openTile(tile, kind) {
     tile.click();
-    const deadline = Date.now() + 20000;
+    const started = Date.now();
+    const budget = OPEN_TIMEOUT[kind] || OPEN_TIMEOUT.image;
     let last = null;
-    while (Date.now() < deadline) {
+
+    while (Date.now() - started < budget) {
       const d = selectors.viewer.descriptor();
       if (d && d.url) return d;
       last = selectors.mediaState();
+      // The click never landed at all — fail in seconds rather than burning a
+      // three-minute video budget waiting on a viewer that never opened.
+      if (last.stage === 'viewer-closed' && Date.now() - started > 6000) break;
       await sleep(200);
     }
+
     // Distinguish "never opened" from "opened but the media had no URL yet" —
     // reporting both as a generic timeout hides which layer actually failed.
-    const err = new Error('no media URL after 20s (' + (last ? last.stage : 'unknown') + ')');
+    const secs = Math.round((Date.now() - started) / 1000);
+    const err = new Error('no media URL after ' + secs + 's (' + (last ? last.stage : 'unknown') + ')');
     err.mediaState = last;
     throw err;
+  }
+
+  // Asks Brave who it thinks started the recent downloads. A save dialog on a
+  // file Brave does not attribute to this extension means the prompt is
+  // page-initiated — a completely different fault from anything in our own
+  // download call, which always passes saveAs:false.
+  async function auditRecent() {
+    try {
+      const a = await chrome.runtime.sendMessage({ type: 'TGMD_DOWNLOAD_AUDIT' });
+      if (!a || !a.ok) return null;
+      const foreign = a.items.filter((d) => !d.fromOurExtension);
+      return {
+        checked: a.items.length,
+        ours: a.items.length - foreign.length,
+        foreign: foreign.map((d) => d.byExtensionName || d.byExtensionId || 'the page itself')
+      };
+    } catch (e) {
+      return null;
+    }
   }
 
   async function pauseGate() {
@@ -207,8 +239,9 @@
     const done = new Set();
 
     try {
-      const c = selectors.grid.container();
-      if (!c) throw new Error('shared-media grid not found — open chat info then Media');
+      // The tiles' grid div does not scroll; its .custom-scroll ancestor does.
+      const c = selectors.grid.scroller();
+      if (!c) throw new Error('shared-media grid not found — open chat info, then the Media tab');
 
       await selectors.viewer.close();
       c.scrollTop = 0;
@@ -233,9 +266,9 @@
           await pauseGate();
           if (!state.running) break;
 
-          // Re-find the tile by key — it may have been recycled since the snapshot.
-          const tile = selectors.grid.tiles().find((t) => tileKey(t) === key);
-          if (!tile || !document.contains(tile)) continue;
+          // Re-find the tile by id — it may have been recycled since the snapshot.
+          const tile = selectors.grid.byKey(key);
+          if (!tile) continue;
 
           done.add(key);
           progressed = true;
@@ -244,7 +277,7 @@
 
           let desc = null;
           try {
-            desc = await openTile(tile);
+            desc = await openTile(tile, selectors.grid.tileKind(tile));
           } catch (e) {
             const msg = String(e && e.message || e);
             summary.failed.push({ filename: 'item ' + summary.total, error: msg });
@@ -304,7 +337,7 @@
     } finally {
       state.running = false;
       await selectors.viewer.close();
-      onEvent({ type: 'done', summary: summary });
+      onEvent({ type: 'done', summary: summary, audit: await auditRecent() });
     }
     return summary;
   }
@@ -313,8 +346,8 @@
   // and for anyone wanting a total before committing to a run.
   async function enumerate(opts) {
     opts = opts || {};
-    const c = selectors.grid.container();
-    if (!c) throw new Error('shared-media grid not found — open chat info then Media');
+    const c = selectors.grid.scroller();
+    if (!c) throw new Error('shared-media grid not found — open chat info, then the Media tab');
 
     const keys = new Set();
     const tracker = scroll.makeStabilityTracker({ needed: 3 });

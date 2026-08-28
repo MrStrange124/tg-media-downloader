@@ -22,9 +22,9 @@
   const url = () => { const d = sel.viewer.descriptor(); return d ? d.url : null; };
 
   // ---- 1. what does tiles() actually return? -----------------------------
-  const c = sel.grid.container();
+  const c = sel.grid.scroller();
   if (!c) {
-    step('grid-container', false, 'no scrollable container found in #RightColumn');
+    step('grid-container', false, 'no .Media.scroll-item tiles visible — open chat info, then the Media tab');
     await save();
     return;
   }
@@ -38,10 +38,11 @@
     count: tiles0.length,
     sample: tiles0.slice(0, 3).map((t) => ({
       tag: t.tagName, cls: String(t.className).slice(0, 80),
+      id: t.id, kind: sel.grid.tileKind(t),
       w: t.clientWidth, h: t.clientHeight,
-      // if many tiles share one ancestor, closest() picked too high
-      isSameAsNext: t === tiles0[1]
+      mediaChildren: t.querySelectorAll('img, video').length
     })),
+    distinctKeys: new Set(tiles0.map((t) => sel.grid.tileKey(t))).size,
     distinctElements: new Set(tiles0).size
   });
 
@@ -80,49 +81,19 @@
     descriptorUrl: u1 ? u1.slice(0, 110) : null
   });
 
-  // ---- 4. does advance() actually move to the next item? ----------------
-  if (u1) {
-    sel.viewer.advance();
-    await sleep(1800);
-    const u2 = url();
-    step('advance-arrowright', u2 !== null && u2 !== u1, {
-      before: u1.slice(0, 60), after: u2 ? u2.slice(0, 60) : null,
-      changed: u2 !== u1
-    });
-
-    // 4b. if ArrowRight did nothing, find out what does.
-    if (u2 === u1) {
-      const alts = [];
-
-      const onWindow = () => {
-        const init = { key: 'ArrowRight', code: 'ArrowRight', bubbles: true, cancelable: true };
-        window.dispatchEvent(new KeyboardEvent('keydown', init));
-      };
-      onWindow();
-      await sleep(1500);
-      alts.push({ method: 'keydown on window', changed: url() !== u1 });
-
-      if (url() === u1) {
-        const buttons = Array.from(document.querySelectorAll('#MediaViewer button'));
-        alts.push({
-          method: 'inventory of viewer buttons',
-          buttons: buttons.map((b) => ({
-            aria: b.getAttribute('aria-label'),
-            title: b.getAttribute('title'),
-            cls: String(b.className).slice(0, 70)
-          }))
-        });
-        const next = buttons.find((b) => /next|forward/i.test(
-          (b.getAttribute('aria-label') || '') + ' ' +
-          (b.getAttribute('title') || '') + ' ' + b.className));
-        if (next) {
-          next.click();
-          await sleep(1500);
-          alts.push({ method: 'click next-like button', changed: url() !== u1 });
-        }
-      }
-      step('advance-alternatives', null, alts);
+  // ---- 4. how long does the opened item take to expose a URL? -----------
+  if (!u1) {
+    const states = [];
+    for (let i = 0; i < 10; i++) {
+      states.push(sel.mediaState());
+      await sleep(1000);
+      if (url()) break;
     }
+    step('media-url-wait', !!url(), {
+      resolvedAfterSeconds: url() ? states.length : null,
+      stages: states.map((x) => x.stage),
+      last: states[states.length - 1]
+    });
   }
 
   await sel.viewer.close();

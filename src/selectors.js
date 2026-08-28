@@ -1,19 +1,27 @@
 (function (root) {
   'use strict';
 
+  // Every selector below is taken from the Telegram Web A source
+  // (github.com/Ajaxy/telegram-tt), not inferred from a rendered page:
+  //   src/components/common/Media.tsx          -> grid tile
+  //   src/components/right/Profile.tsx         -> tile id scheme
+  //   src/components/mediaViewer/MediaViewer*  -> viewer, slides, video
   const S = {
-    // --- verified stable across many Web A builds ---
     VIEWER:        '#MediaViewer',
     ACTIVE_SLIDE:  '#MediaViewer .MediaViewerSlide--active',
     ACTIONS:       '#MediaViewer .MediaViewerActions',
-    VIDEO:         '.MediaViewerContent .VideoPlayer video',
+    // VideoPlayer.tsx gives the real player this id and sets src= directly.
+    VIEWER_VIDEO:  '#media-viewer-video',
+    CONTENT:       '.MediaViewerContent',
     IMAGE:         '.MediaViewerContent img',
-    // --- starting points for heuristics; not relied upon ---
+    // Media.tsx: <div id={`shared-media${getMessageHtmlId(id)}`}
+    //                 className="Media scroll-item">
+    TILE:          '.Media.scroll-item',
+    SCROLLER:      '.custom-scroll',
     RIGHT_COLUMN:  '#RightColumn',
     MIDDLE_HEADER: '#MiddleColumn .ChatInfo, #MiddleColumn .chat-info, #MiddleHeader'
   };
 
-  const scroll = root.TGMD.scroll;
   const parseStreamUrl = root.TGMD.streamUrl.parseStreamUrl;
 
   const q  = (sel, ctx) => (ctx || document).querySelector(sel);
@@ -28,10 +36,13 @@
     mediaEl() {
       const slide = viewer.activeSlide();
       if (!slide) return null;
-      const video = q(S.VIDEO, slide);
+
+      // A real player always carries the id; the poster placeholder that
+      // MediaViewerContent.renderVideoPreview() paints while the URL is still
+      // resolving is a bare <video> with only a background-image.
+      const video = q(S.VIEWER_VIDEO, slide) || q('video', slide);
       if (video) return { el: video, kind: 'video' };
-      // Exclude the blurred low-res backdrop Telegram paints behind the photo:
-      // it is always the smaller of the images present.
+
       const imgs = qa(S.IMAGE, slide)
         .filter((i) => i.src && !i.src.startsWith('data:'))
         .sort((a, b) => (b.naturalWidth * b.naturalHeight) - (a.naturalWidth * a.naturalHeight));
@@ -53,8 +64,6 @@
         size: typeof meta.size === 'number' ? meta.size : null
       };
     },
-
-    advance() { sendKey('ArrowRight'); },
 
     // Closing must be verified, not assumed: synthetic KeyboardEvents carry
     // isTrusted:false and some handlers ignore them. Escalate until the
@@ -79,38 +88,37 @@
         '#MediaViewer button[aria-label*="Close" i], #MediaViewer button[title*="Close" i]');
       if (btn && await attempt(() => btn.click())) return true;
 
-      // Web A pushes a history entry for the viewer.
       if (await attempt(() => history.back())) return true;
-
       return !viewer.isOpen();
     }
   };
 
-  // A <video> that has not begun loading has empty currentSrc AND src; Web A
-  // sometimes carries the URL on a child <source> instead.
+  // VideoPlayer.tsx sets src= on the element. renderVideoPreview()'s
+  // placeholder has none, which is a "still loading", not a failure.
   function videoUrl(v) {
     if (!v) return '';
-    if (v.currentSrc) return v.currentSrc;
-    if (v.src) return v.src;
-    const source = v.querySelector && v.querySelector('source');
-    return (source && source.src) || '';
+    return v.currentSrc || v.src || '';
   }
 
-  // Explains *why* no descriptor is available, so a timeout does not get
+  // Explains *why* no descriptor is available yet, so a timeout is not
   // misreported as "the viewer did not open".
   function mediaState() {
-    const slide = viewer.activeSlide();
     if (!q(S.VIEWER)) return { stage: 'viewer-closed' };
+    const slide = viewer.activeSlide();
     if (!slide) return { stage: 'viewer-open-no-active-slide' };
-    const v = q(S.VIDEO, slide);
-    if (v) {
+
+    const real = q(S.VIEWER_VIDEO, slide);
+    const anyVideo = real || q('video', slide);
+    if (anyVideo) {
       return {
-        stage: videoUrl(v) ? 'ready' : 'video-present-no-url',
-        readyState: v.readyState,
-        networkState: v.networkState,
-        hasSourceChild: !!(v.querySelector && v.querySelector('source')),
-        currentSrc: (v.currentSrc || '').slice(0, 60),
-        src: (v.src || '').slice(0, 60)
+        stage: videoUrl(anyVideo) ? 'ready'
+             : real ? 'video-player-mounted-no-url'   // URL still resolving
+                    : 'video-poster-only',            // slide not active yet
+        isRealPlayer: !!real,
+        readyState: anyVideo.readyState,
+        networkState: anyVideo.networkState,
+        spinner: !!q('.spinner-wrapper, .ProgressSpinner', slide),
+        src: (anyVideo.currentSrc || anyVideo.src || '').slice(0, 80)
       };
     }
     const imgs = qa(S.IMAGE, slide).filter((i) => i.src && !i.src.startsWith('data:'));
@@ -126,63 +134,41 @@
 
   // ------------------------------------------------------------------ grid
   const grid = {
-    // The shared-media grid is the largest scrollable region inside the right
-    // column. Class names are hashed, so it is identified by behaviour.
-    container() {
-      const rc = q(S.RIGHT_COLUMN);
-      if (!rc) return null;
-      const candidates = qa('*', rc).filter((el) => {
-        const cs = getComputedStyle(el);
-        return scroll.isScrollable({
-          overflowY: cs.overflowY,
-          scrollHeight: el.scrollHeight,
-          clientHeight: el.clientHeight
-        });
-      });
-      if (!candidates.length) return null;
-      return candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
-    },
-
-    // One tile per media element. Walking up from the media element and
-    // stopping before any ancestor that holds a second one prevents several
-    // thumbnails collapsing onto a shared wrapper — closest() would pick the
-    // nearest matching ancestor and silently merge them into one tile.
+    // Tiles are matched directly. offsetParent filters out the inactive
+    // Transition slides (other shared-media tabs stay mounted but hidden).
     tiles() {
-      const c = grid.container();
-      if (!c) return [];
-      const out = [];
-      const seenMedia = new Set();
-
-      for (const media of qa('img, video', c)) {
-        if (seenMedia.has(media)) continue;
-        seenMedia.add(media);
-
-        let el = media;
-        for (let hop = 0; hop < 4; hop++) {
-          const parent = el.parentElement;
-          if (!parent || parent === c) break;
-          if (parent.querySelectorAll('img, video').length > 1) break;
-          el = parent;
-        }
-        out.push(el);
-      }
-      return out;
+      return qa(S.TILE).filter((el) => el.offsetParent !== null);
     },
 
-    // Identity for a tile. The grid is virtualised, so element references go
-    // stale across scrolling — this string does not.
+    container() {
+      const t = grid.tiles()[0];
+      return t ? t.parentElement : null;
+    },
+
+    scroller() {
+      const t = grid.tiles()[0];
+      return t ? t.closest(S.SCROLLER) : null;
+    },
+
+    // The tile's own id — `shared-media` + `message-<messageId>`. Unique,
+    // stable, and unaffected by virtualisation recycling the node, which is
+    // exactly what a thumbnail URL was not.
     tileKey(tile) {
-      if (!tile) return null;
-      if (tile.tagName === 'IMG' && tile.src) return tile.src;
-      const img = tile.querySelector && tile.querySelector('img');
-      if (img && img.src) return img.src;
-      const vid = tile.querySelector && tile.querySelector('video');
-      if (vid && (vid.poster || vid.src)) return vid.poster || vid.src;
-      try {
-        const bg = getComputedStyle(tile).backgroundImage;
-        if (bg && bg !== 'none') return bg;
-      } catch (e) { /* detached node */ }
-      return null;
+      return tile && tile.id ? tile.id : null;
+    },
+
+    byKey(key) {
+      if (!key) return null;
+      const el = document.getElementById(key);
+      return el && el.offsetParent !== null ? el : null;
+    },
+
+    // Media.tsx renders <span class="video-duration"> only for videos, with
+    // the literal text "GIF" for animations.
+    tileKind(tile) {
+      const d = tile && tile.querySelector('.video-duration');
+      if (!d) return 'image';
+      return (d.textContent || '').trim() === 'GIF' ? 'gif' : 'video';
     }
   };
 
@@ -212,17 +198,21 @@
   }
 
   function probe() {
-    const slide = viewer.activeSlide();
     const container = grid.container();
+    const scroller = grid.scroller();
+    const tiles = grid.tiles();
     const media = viewer.mediaEl();
     return {
       viewerOpen:      viewer.isOpen(),
-      activeSlide:     !!slide,
+      activeSlide:     !!viewer.activeSlide(),
       actionsBar:      !!q(S.ACTIONS),
       mediaEl:         media ? media.kind : null,
       descriptor:      viewer.descriptor(),
+      mediaState:      mediaState(),
       gridContainer:   container ? describe(container) : null,
-      gridTileCount:   grid.tiles().length,
+      gridScroller:    scroller ? describe(scroller) : null,
+      gridTileCount:   tiles.length,
+      sampleTiles:     tiles.slice(0, 5).map((t) => ({ id: t.id, kind: grid.tileKind(t) })),
       rightColumn:     !!q(S.RIGHT_COLUMN),
       chatId:          chat.id(),
       chatTitle:       chat.title(),
