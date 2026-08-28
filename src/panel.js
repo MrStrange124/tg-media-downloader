@@ -167,9 +167,17 @@
       fill(ev.received / ev.total);
     } else if (ev.type === 'item') {
       if (ev.ok) {
-        logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : ''));
+        let note = '';
+        // Make the origin of each download visible: a save dialog on a file
+        // that is not ours means the prompt is page-initiated.
+        if (ev.audit && ev.audit.ok) {
+          if (!ev.audit.ours) note = '  [NOT OURS: ' + (ev.audit.byExtensionId || 'page-initiated') + ']';
+          else if (ev.audit.danger && ev.audit.danger !== 'safe') note = '  [danger: ' + ev.audit.danger + ']';
+        }
+        logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '') + note);
       } else {
         logLine('FAILED item ' + (ev.index + 1) + ': ' + ev.error);
+        if (ev.mediaState) logLine('        state: ' + JSON.stringify(ev.mediaState));
         failures.push(ev);
       }
       showFailures();

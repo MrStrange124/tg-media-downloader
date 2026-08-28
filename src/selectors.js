@@ -41,9 +41,7 @@
     descriptor() {
       const found = viewer.mediaEl();
       if (!found) return null;
-      const url = found.kind === 'video'
-        ? (found.el.currentSrc || found.el.src)
-        : found.el.src;
+      const url = found.kind === 'video' ? videoUrl(found.el) : found.el.src;
       if (!url) return null;
 
       const meta = parseStreamUrl(url) || {};
@@ -87,6 +85,38 @@
       return !viewer.isOpen();
     }
   };
+
+  // A <video> that has not begun loading has empty currentSrc AND src; Web A
+  // sometimes carries the URL on a child <source> instead.
+  function videoUrl(v) {
+    if (!v) return '';
+    if (v.currentSrc) return v.currentSrc;
+    if (v.src) return v.src;
+    const source = v.querySelector && v.querySelector('source');
+    return (source && source.src) || '';
+  }
+
+  // Explains *why* no descriptor is available, so a timeout does not get
+  // misreported as "the viewer did not open".
+  function mediaState() {
+    const slide = viewer.activeSlide();
+    if (!q(S.VIEWER)) return { stage: 'viewer-closed' };
+    if (!slide) return { stage: 'viewer-open-no-active-slide' };
+    const v = q(S.VIDEO, slide);
+    if (v) {
+      return {
+        stage: videoUrl(v) ? 'ready' : 'video-present-no-url',
+        readyState: v.readyState,
+        networkState: v.networkState,
+        hasSourceChild: !!(v.querySelector && v.querySelector('source')),
+        currentSrc: (v.currentSrc || '').slice(0, 60),
+        src: (v.src || '').slice(0, 60)
+      };
+    }
+    const imgs = qa(S.IMAGE, slide).filter((i) => i.src && !i.src.startsWith('data:'));
+    if (!imgs.length) return { stage: 'slide-present-no-media' };
+    return { stage: 'ready', imgCount: imgs.length };
+  }
 
   function sendKey(key) {
     const init = { key: key, code: key, bubbles: true, cancelable: true };
@@ -201,5 +231,6 @@
   }
 
   root.TGMD = root.TGMD || {};
-  root.TGMD.selectors = { viewer: viewer, grid: grid, chat: chat, probe: probe, S: S };
+  root.TGMD.selectors = { viewer: viewer, grid: grid, chat: chat, probe: probe,
+                          mediaState: mediaState, S: S };
 })(typeof globalThis !== 'undefined' ? globalThis : self);

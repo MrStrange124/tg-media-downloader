@@ -39,19 +39,44 @@
   }
 
   // Resolve whatever was clicked to one of the grid's tiles.
+  //
+  // Direct matching against tiles() is not enough: since tiles() resolves to
+  // the media element itself, and Telegram lays a clickable overlay *above*
+  // the thumbnail, e.target is usually that overlay — which an <img> can
+  // never contain. So walk up until we find the subtree holding exactly one
+  // media element; that subtree is the grid cell.
   function tileFromEvent(e) {
-    const tiles = sel().grid.tiles();
-    for (const t of tiles) {
-      if (t === e.target || t.contains(e.target)) return t;
-    }
-    // The tile may be an ancestor of the click target's media element.
-    const media = e.target.closest && e.target.closest('img, video');
-    if (media) {
-      for (const t of tiles) {
-        if (t === media || t.contains(media)) return t;
+    const c = sel().grid.container();
+    if (!c) return null;
+
+    let node = e.target;
+    for (let hop = 0; hop < 8 && node && node !== c; hop++) {
+      if (node.querySelectorAll) {
+        const media = node.querySelectorAll('img, video');
+        if (media.length === 1) return normalise(media[0]);
+        if (media.length > 1) break;   // gone too far: this holds several cells
       }
+      node = node.parentElement;
+    }
+
+    // Fall back to a direct hit on a media element or a tile.
+    if (e.target.tagName === 'IMG' || e.target.tagName === 'VIDEO') {
+      return normalise(e.target);
+    }
+    for (const t of sel().grid.tiles()) {
+      if (t === e.target || (t.contains && t.contains(e.target))) return t;
     }
     return null;
+  }
+
+  // Match the same element tiles() would have produced for this media node,
+  // so the key we store lines up with the key the run engine looks for.
+  function normalise(media) {
+    const tiles = sel().grid.tiles();
+    for (const t of tiles) {
+      if (t === media || (t.contains && t.contains(media))) return t;
+    }
+    return media;
   }
 
   function onGridClick(e) {

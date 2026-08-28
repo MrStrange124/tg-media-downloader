@@ -139,11 +139,18 @@
     }).replace(/^Telegram\//, folder + '/');
 
     const blob = await fetchMedia(desc, opts);
-    await saveBlob(blob, filename);
+    const downloadId = await saveBlob(blob, filename);
+
+    // Record who Brave thinks started this download. If a save dialog appears
+    // for a file that is not ours, the prompt is page-initiated, not ours.
+    let audit = null;
+    try {
+      audit = await chrome.runtime.sendMessage({ type: 'TGMD_DOWNLOAD_INFO', id: downloadId });
+    } catch (e) { /* audit is best effort */ }
     const rec = {};
     rec[record] = filename;
     await chrome.storage.local.set(rec);
-    return { ok: true, filename: filename, bytes: blob.size };
+    return { ok: true, filename: filename, bytes: blob.size, audit: audit };
   }
 
   // ------------------------------------------------------------- run engine
@@ -164,13 +171,19 @@
 
   async function openTile(tile) {
     tile.click();
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + 20000;
+    let last = null;
     while (Date.now() < deadline) {
       const d = selectors.viewer.descriptor();
       if (d && d.url) return d;
+      last = selectors.mediaState();
       await sleep(200);
     }
-    return null;
+    // Distinguish "never opened" from "opened but the media had no URL yet" —
+    // reporting both as a generic timeout hides which layer actually failed.
+    const err = new Error('no media URL after 20s (' + (last ? last.stage : 'unknown') + ')');
+    err.mediaState = last;
+    throw err;
   }
 
   async function pauseGate() {
@@ -229,11 +242,16 @@
           summary.total++;
           onEvent({ type: 'progress', enumerated: summary.total });
 
-          const desc = await openTile(tile);
-          if (!desc) {
-            summary.failed.push({ filename: 'item ' + summary.total, error: 'viewer did not open' });
-            onEvent({ type: 'item', index: summary.total - 1, ok: false, error: 'viewer did not open' });
-          } else {
+          let desc = null;
+          try {
+            desc = await openTile(tile);
+          } catch (e) {
+            const msg = String(e && e.message || e);
+            summary.failed.push({ filename: 'item ' + summary.total, error: msg });
+            onEvent({ type: 'item', index: summary.total - 1, ok: false,
+                      error: msg, mediaState: e.mediaState || null });
+          }
+          if (desc) {
             try {
               const res = await downloadCurrent({
                 signal: state.abort.signal,
@@ -246,7 +264,7 @@
               if (res.skipped) summary.skipped++; else summary.saved++;
               onEvent({
                 type: 'item', index: summary.total - 1, ok: true,
-                filename: res.filename, skipped: !!res.skipped
+                filename: res.filename, skipped: !!res.skipped, audit: res.audit
               });
             } catch (e) {
               const msg = String(e && e.message || e);

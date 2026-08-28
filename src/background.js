@@ -11,6 +11,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep the message channel open for the async response
   }
 
+  // Single-item audit, used inline by the run engine.
+  if (msg && msg.type === 'TGMD_DOWNLOAD_INFO') {
+    chrome.downloads.search({ id: msg.id })
+      .then((items) => {
+        const d = items && items[0];
+        sendResponse(d ? {
+          ok: true,
+          byExtensionId: d.byExtensionId || null,
+          ours: d.byExtensionId === chrome.runtime.id,
+          state: d.state,
+          danger: d.danger,
+          mime: d.mime,
+          error: d.error || null
+        } : { ok: false, error: 'download ' + msg.id + ' not found' });
+      })
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
   // Reports what Brave actually recorded about recent downloads. The decisive
   // field is byExtensionId: if a download that prompted has none, it was
   // page-initiated and did not come from this extension at all.
