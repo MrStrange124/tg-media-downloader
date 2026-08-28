@@ -75,13 +75,22 @@ document.getElementById('copydiag').addEventListener('click', async () => {
   document.getElementById('concurrency').value = s.concurrency || 2;
 })();
 
+(async function loadLayout() {
+  const got = await chrome.storage.local.get('settings');
+  const cur = (got.settings && got.settings.layout) === 'nested' ? 'nested' : 'flat';
+  document.getElementById('layout').value = cur;
+})();
+
 document.getElementById('savesettings').addEventListener('click', async () => {
   const subfolder = document.getElementById('subfolder').value.trim() || 'Telegram';
   const raw = parseInt(document.getElementById('concurrency').value, 10);
   const concurrency = Math.min(3, Math.max(1, isNaN(raw) ? 2 : raw));
   document.getElementById('concurrency').value = concurrency;
-  await chrome.storage.local.set({ settings: { subfolder: subfolder, concurrency: concurrency } });
-  log('saved — subfolder "' + subfolder + '", concurrency ' + concurrency);
+  const layout = document.getElementById('layout').value === 'nested' ? 'nested' : 'flat';
+  await chrome.storage.local.set({
+    settings: { subfolder: subfolder, concurrency: concurrency, layout: layout }
+  });
+  log('saved — layout ' + layout + ', subfolder "' + subfolder + '", concurrency ' + concurrency);
 });
 
 document.getElementById('clearhistory').addEventListener('click', async () => {

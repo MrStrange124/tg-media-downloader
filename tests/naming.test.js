@@ -95,3 +95,29 @@ test('buildFilename sanitises a hostile chat title', () => {
     'Telegram/.._.._evil/2026-08-28_1.jpg'
   );
 });
+
+test('flat layout emits no directory component', () => {
+  const out = naming.buildFilename({
+    chatTitle: 'DDC63 members', date: new Date('2026-08-28T00:00:00Z'),
+    messageKey: 'abc123', mime: 'image/jpeg', layout: 'flat'
+  });
+  assert.ok(!out.includes('/'), 'a flat name must contain no path separator: ' + out);
+  assert.match(out, /^Telegram - DDC63 members - 2026-08-28_abc123\.jpg$/);
+});
+
+test('nested layout still produces the folder structure', () => {
+  const out = naming.buildFilename({
+    chatTitle: 'DDC63 members', date: new Date('2026-08-28T00:00:00Z'),
+    messageKey: 'abc123', mime: 'image/jpeg', layout: 'nested'
+  });
+  assert.equal(out, 'Telegram/DDC63 members/2026-08-28_abc123.jpg');
+});
+
+test('flat layout strips separators coming from the chat title', () => {
+  // sanitizeSegment turns "/" into "_", so a title cannot inject a directory.
+  const out = naming.buildFilename({
+    chatTitle: 'a/b', date: new Date('2026-08-28T00:00:00Z'),
+    messageKey: 'k', mime: 'image/png', layout: 'flat'
+  });
+  assert.ok(!out.includes('/'), out);
+});

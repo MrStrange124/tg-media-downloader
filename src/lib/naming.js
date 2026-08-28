@@ -38,13 +38,21 @@
     return d.toISOString().slice(0, 10);
   }
 
-  function buildFilename({ chatTitle, date, messageKey, index, originalName, mime }) {
+  function buildFilename({ chatTitle, date, messageKey, index, originalName, mime, layout }) {
     const folder = sanitizeSegment(chatTitle);
     const parts = [isoDate(date) + '_' + sanitizeSegment(messageKey)];
     if (index != null) parts.push(String(index));
     if (originalName) parts.push(sanitizeSegment(originalName));
     let name = parts.join('_');
     if (!originalName) name += '.' + extFromMime(mime);
+
+    // 'flat' emits no directory component at all. On the target machine every
+    // download whose path contained a subdirectory stopped for a save dialog,
+    // while flat-path downloads completed at normal speed -- so the group is
+    // folded into the filename instead of becoming a folder.
+    if (layout === 'flat') {
+      return sanitizeSegment('Telegram - ' + folder + ' - ' + name);
+    }
     return 'Telegram/' + folder + '/' + name;
   }
 

@@ -174,10 +174,15 @@
     }
   }
 
-  async function subfolder() {
+  async function settings() {
     const got = await chrome.storage.local.get('settings');
     const s = got.settings || {};
-    return naming.sanitizeSegment(s.subfolder || 'Telegram');
+    return {
+      subfolder: naming.sanitizeSegment(s.subfolder || 'Telegram'),
+      // Flat by default: a subdirectory in the target path is the one factor
+      // that correlates with Brave stopping to ask where to save.
+      layout: s.layout === 'nested' ? 'nested' : 'flat'
+    };
   }
 
   // -------------------------------------------------------- single download
@@ -203,14 +208,18 @@
       if (hadExt === wantExt) return { ok: true, skipped: true, filename: previous };
     }
 
-    const folder = await subfolder();
-    const filename = naming.buildFilename({
+    const cfg = await settings();
+    let filename = naming.buildFilename({
       chatTitle: selectors.chat.title(),
       date: new Date(),
       messageKey: messageKey,
       originalName: desc.originalName,
-      mime: desc.mime
-    }).replace(/^Telegram\//, folder + '/');
+      mime: desc.mime,
+      layout: cfg.layout
+    });
+    if (cfg.layout === 'nested') {
+      filename = filename.replace(/^Telegram\//, cfg.subfolder + '/');
+    }
 
     const blob = await fetchMedia(desc, opts);
     const saved = await saveBlob(blob, filename);

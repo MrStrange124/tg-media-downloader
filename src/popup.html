@@ -15,6 +15,12 @@
   <input id="subfolder" type="text" value="Telegram">
   <label for="concurrency">Concurrency (1&ndash;3)</label>
   <input id="concurrency" type="number" min="1" max="3" value="2">
+  <label>File layout
+    <select id="layout">
+      <option value="flat">Flat filenames (no subfolders) — avoids the save prompt</option>
+      <option value="nested">Subfolders: Telegram/&lt;group&gt;/</option>
+    </select>
+  </label>
   <button id="savesettings">Save settings</button>
   <button id="clearhistory">Clear download history for this chat</button>
 
