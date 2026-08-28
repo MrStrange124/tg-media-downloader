@@ -91,14 +91,24 @@
   }
 
   // ------------------------------------------------------------------- save
+  // Two ways to put bytes on disk. When the user has granted a folder we write
+  // straight into it, which involves no browser download and therefore cannot
+  // be interrupted by a save dialog. Otherwise fall back to chrome.downloads so
+  // the extension still works with no folder configured.
   async function saveBlob(blob, filename) {
+    const fsa = root.TGMD.fsa;
+    if (fsa && await fsa.ready()) {
+      const path = await fsa.write(filename, blob);
+      return { mode: 'disk', path: path };
+    }
+
     const blobUrl = URL.createObjectURL(blob);
     try {
       const res = await chrome.runtime.sendMessage({
         type: 'TGMD_DOWNLOAD', blobUrl: blobUrl, filename: filename
       });
       if (!res || !res.ok) throw new Error((res && res.error) || 'download rejected');
-      return res.id;
+      return { mode: 'downloads', id: res.id };
     } finally {
       // The background worker holds its own reference until the download
       // completes; releasing ours later avoids revoking too early.
@@ -145,18 +155,21 @@
     }).replace(/^Telegram\//, folder + '/');
 
     const blob = await fetchMedia(desc, opts);
-    const downloadId = await saveBlob(blob, filename);
+    const saved = await saveBlob(blob, filename);
+    const written = saved.path || filename;
 
-    // Record who Brave thinks started this download. If a save dialog appears
-    // for a file that is not ours, the prompt is page-initiated, not ours.
+    // Only meaningful for the downloads API: records who Brave credits for the
+    // download. Writing to disk has no DownloadItem to audit.
     let audit = null;
-    try {
-      audit = await chrome.runtime.sendMessage({ type: 'TGMD_DOWNLOAD_INFO', id: downloadId });
-    } catch (e) { /* audit is best effort */ }
+    if (saved.mode === 'downloads') {
+      try {
+        audit = await chrome.runtime.sendMessage({ type: 'TGMD_DOWNLOAD_INFO', id: saved.id });
+      } catch (e) { /* audit is best effort */ }
+    }
     const rec = {};
-    rec[record] = filename;
+    rec[record] = written;
     await chrome.storage.local.set(rec);
-    return { ok: true, filename: filename, bytes: blob.size, audit: audit };
+    return { ok: true, filename: written, bytes: blob.size, audit: audit, via: saved.mode };
   }
 
   // ------------------------------------------------------------- run engine

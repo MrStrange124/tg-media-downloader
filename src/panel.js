@@ -25,6 +25,7 @@
     '    <button class="tgmd-btn tgmd-sm" data-act="retry">Retry failed</button>',
     '  </div>',
     '  <details class="tgmd-log"><summary>Log</summary><pre></pre></details>',
+    '  <button class="tgmd-link" data-act="folder">Save folder: not set (using Downloads)</button>',
     '  <button class="tgmd-link" data-act="clearhistory">Clear history for this chat</button>',
     '  <button class="tgmd-link" data-act="probeprompt">Diagnose the save prompt</button>',
     '</div>'
@@ -46,6 +47,7 @@
     });
 
     refreshHistoryLabel();
+    refreshFolderLabel();
   }
 
   // ------------------------------------------------------------- rendering
@@ -90,6 +92,23 @@
     }
   }
 
+  async function refreshFolderLabel() {
+    const btn = el && $('[data-act="folder"]');
+    if (!btn) return;
+    const fsa = root.TGMD.fsa;
+    if (!fsa || !fsa.supported()) {
+      btn.textContent = 'Save folder: unsupported — using Downloads';
+      return;
+    }
+    const state = await fsa.permission();
+    const h = await fsa.handle();
+    const where = h && h.name ? h.name : '';
+    btn.textContent =
+      state === 'granted' ? 'Saving to "' + where + '" — no prompts. Change\u2026'
+      : state === 'prompt' ? 'Save folder "' + where + '" — click to re-allow'
+      : 'Save folder: not set (using Downloads). Choose\u2026';
+  }
+
   // --------------------------------------------------------------- actions
   async function runWith(tileKeys, force) {
     failures = [];
@@ -105,11 +124,18 @@
     } finally {
       setRunning(false);
       refreshHistoryLabel();
+      refreshFolderLabel();
     }
   }
 
   async function onAction(act, btn) {
     if (btn.disabled) return;
+
+    // Re-granting folder access needs transient activation, so it has to
+    // happen on this click, before anything else awaits.
+    if ((act === 'all' || act === 'download-selected') && root.TGMD.fsa) {
+      try { await root.TGMD.fsa.ensurePermission(); } catch (e) { /* fall back */ }
+    }
 
     if (act === 'all') {
       await runWith(null);
@@ -143,6 +169,18 @@
       fill(0);
       status('Idle');
       if (root.TGMD.select.active) root.TGMD.select.toggle();
+
+    } else if (act === 'folder') {
+      try {
+        const state = await root.TGMD.fsa.permission();
+        if (state === 'prompt') await root.TGMD.fsa.ensurePermission();
+        else await root.TGMD.fsa.choose();
+        status('Save folder set — downloads will not prompt');
+      } catch (e) {
+        // Dismissing the picker throws AbortError; that is not a failure.
+        if (!/abort/i.test(e.name + e.message)) status('Folder error: ' + e.message);
+      }
+      refreshFolderLabel();
 
     } else if (act === 'clearhistory') {
       if (running) { status('Stop the run before clearing history.'); return; }
