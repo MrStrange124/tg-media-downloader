@@ -66,3 +66,7 @@
   font: inherit; font-size: 11px; text-align: left; text-decoration: underline;
 }
 .tgmd-link:hover { color: #adc9fb; }
+
+/* A folder that is not granted means files still go through the download
+   system and will prompt, so it must not look like ordinary help text. */
+.tgmd-panel .tgmd-warn { color: #ffb020; font-weight: 600; }

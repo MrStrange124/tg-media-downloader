@@ -4,6 +4,10 @@
   let el = null;
   let failures = [];
   let running = false;
+  // Cached so a click handler can decide what to do without awaiting first:
+  // opening a folder picker needs the click's transient activation.
+  let folderState = 'none';
+  let folderName = '';
 
   const HTML = [
     '<div class="tgmd-head">',
@@ -94,19 +98,61 @@
 
   async function refreshFolderLabel() {
     const btn = el && $('[data-act="folder"]');
-    if (!btn) return;
     const fsa = root.TGMD.fsa;
     if (!fsa || !fsa.supported()) {
-      btn.textContent = 'Save folder: unsupported — using Downloads';
+      folderState = 'unsupported';
+      if (btn) btn.textContent = 'Save folder: unsupported — using Downloads';
       return;
     }
-    const state = await fsa.permission();
+    folderState = await fsa.permission();
     const h = await fsa.handle();
-    const where = h && h.name ? h.name : '';
+    folderName = (h && h.name) || '';
+    if (!btn) return;
     btn.textContent =
-      state === 'granted' ? 'Saving to "' + where + '" — no prompts. Change\u2026'
-      : state === 'prompt' ? 'Save folder "' + where + '" — click to re-allow'
-      : 'Save folder: not set (using Downloads). Choose\u2026';
+      folderState === 'granted' ? 'Saving to "' + folderName + '" — no prompts. Change\u2026'
+      : folderState === 'prompt' ? 'Save folder "' + folderName + '" — click to re-allow'
+      : 'Save folder: NOT SET — downloads will prompt. Choose\u2026';
+    btn.classList.toggle('tgmd-warn', folderState !== 'granted');
+  }
+
+  // Opening the picker, and re-granting access, both require the click's
+  // transient activation — so the API call must be made before this awaits.
+  async function pickFolder(opts) {
+    opts = opts || {};
+    const fsa = root.TGMD.fsa;
+    if (!fsa || !fsa.supported()) {
+      status('No folder-picker API in this browser — using Downloads');
+      return false;
+    }
+    let pending;
+    try {
+      pending = folderState === 'prompt' ? fsa.ensurePermission() : fsa.choose();
+    } catch (e) {
+      status('Folder picker refused: ' + (e.message || e));
+      return false;
+    }
+    try {
+      const granted = await pending;
+      await refreshFolderLabel();
+      if (granted === false) {
+        status('Folder access not granted — using Downloads');
+        return false;
+      }
+      status('Saving to "' + folderName + '" — no prompts');
+      return true;
+    } catch (e) {
+      await refreshFolderLabel();
+      const name = String(e && e.name) + ' ' + String(e && e.message);
+      if (/abort/i.test(name)) {
+        if (!opts.quiet) status('Folder choice cancelled — using Downloads');
+      } else {
+        // Never swallow this: a failure here is exactly why files would keep
+        // going through the prompting path.
+        status('Folder error: ' + (e.message || e));
+        logLine('FOLDER ERROR ' + name);
+      }
+      return false;
+    }
   }
 
   // --------------------------------------------------------------- actions
@@ -131,10 +177,17 @@
   async function onAction(act, btn) {
     if (btn.disabled) return;
 
-    // Re-granting folder access needs transient activation, so it has to
-    // happen on this click, before anything else awaits.
-    if ((act === 'all' || act === 'download-selected') && root.TGMD.fsa) {
-      try { await root.TGMD.fsa.ensurePermission(); } catch (e) { /* fall back */ }
+    // Both of these need the click's transient activation, so they run before
+    // anything else in this function awaits.
+    if (act === 'folder') { await pickFolder(); return; }
+
+    if (act === 'all' || act === 'download-selected') {
+      // Falling back to the downloads API silently is what let six files
+      // prompt again, so ask for a folder here rather than hoping the link
+      // at the bottom was noticed.
+      if (folderState === 'prompt' || folderState === 'none') {
+        await pickFolder({ quiet: true });
+      }
     }
 
     if (act === 'all') {
@@ -169,18 +222,6 @@
       fill(0);
       status('Idle');
       if (root.TGMD.select.active) root.TGMD.select.toggle();
-
-    } else if (act === 'folder') {
-      try {
-        const state = await root.TGMD.fsa.permission();
-        if (state === 'prompt') await root.TGMD.fsa.ensurePermission();
-        else await root.TGMD.fsa.choose();
-        status('Save folder set — downloads will not prompt');
-      } catch (e) {
-        // Dismissing the picker throws AbortError; that is not a failure.
-        if (!/abort/i.test(e.name + e.message)) status('Folder error: ' + e.message);
-      }
-      refreshFolderLabel();
 
     } else if (act === 'clearhistory') {
       if (running) { status('Stop the run before clearing history.'); return; }
@@ -228,7 +269,9 @@
           if (!ev.audit.ours) note = '  [NOT OURS: ' + (ev.audit.byExtensionId || 'page-initiated') + ']';
           else if (ev.audit.danger && ev.audit.danger !== 'safe') note = '  [danger: ' + ev.audit.danger + ']';
         }
-        logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '') + note);
+        const via = ev.via === 'disk' ? '  [disk]'
+                  : ev.via === 'downloads' ? '  [downloads — this one can prompt]' : '';
+        logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '') + via + note);
       } else {
         logLine('FAILED item ' + (ev.index + 1) + ': ' + ev.error);
         if (ev.mediaState) logLine('        state: ' + JSON.stringify(ev.mediaState));

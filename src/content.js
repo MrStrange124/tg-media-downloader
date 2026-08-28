@@ -329,7 +329,8 @@
               if (res.skipped) summary.skipped++; else summary.saved++;
               onEvent({
                 type: 'item', index: summary.total - 1, ok: true,
-                filename: res.filename, skipped: !!res.skipped, audit: res.audit
+                filename: res.filename, skipped: !!res.skipped, audit: res.audit,
+                via: res.via
               });
             } catch (e) {
               const msg = String(e && e.message || e);
