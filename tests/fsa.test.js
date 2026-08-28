@@ -43,6 +43,6 @@ test('nextCandidate leaves a dotfile stem intact', () => {
   assert.equal(fsa.nextCandidate('.gitignore', 1), '.gitignore (1)');
 });
 
-test('supported() is false where the API is absent', () => {
-  assert.equal(fsa.supported(), false);
+test('canPick() is false where no picker exists', () => {
+  assert.equal(fsa.canPick(), false);
 });

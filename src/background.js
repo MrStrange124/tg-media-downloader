@@ -1,5 +1,10 @@
 'use strict';
 
+// The File System Access handle lives in extension storage and is usable
+// here: the service worker can open writable streams even though it cannot
+// show a picker. Granting happens in src/setup.html.
+importScripts('lib/fsa.js');
+
 // downloadId -> { blobUrl, filename, retried }
 const inFlight = new Map();
 
@@ -62,6 +67,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg && msg.type === 'TGMD_PROBE') {
     probeOne(msg)
       .then(sendResponse)
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TGMD_FS_STATUS') {
+    self.TGMD.fsa.permission()
+      .then((state) => sendResponse({ ok: true, state: state }))
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TGMD_OPEN_SETUP') {
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/setup.html') })
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TGMD_FS_BEGIN') {
+    fsBegin(msg.filename)
+      .then((r) => sendResponse({ ok: true, id: r.id, path: r.path }))
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TGMD_FS_CHUNK') {
+    fsChunk(msg.id, msg.b64)
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
+    return true;
+  }
+
+  if (msg && msg.type === 'TGMD_FS_END') {
+    fsEnd(msg.id, msg.abort)
+      .then((path) => sendResponse({ ok: true, path: path }))
       .catch((e) => sendResponse({ ok: false, error: String(e.message || e) }));
     return true;
   }
@@ -161,4 +201,38 @@ async function probeOne(msg) {
   }
   const settled = await waitForSettled(id, 60000);
   return { ok: true, id, ms: Date.now() - t0, ...settled };
+}
+
+// ------------------------------------------------- direct-to-disk writing
+// Extension messaging is JSON, so binary cannot cross contexts directly.
+// The content script sends base64 chunks and each is streamed to disk here,
+// which keeps memory bounded no matter how large the video is.
+const writers = new Map();
+let writerSeq = 0;
+
+async function fsBegin(filename) {
+  const { writable, path } = await self.TGMD.fsa.openWriter(filename);
+  const id = ++writerSeq;
+  writers.set(id, writable);
+  return { id, path };
+}
+
+async function fsChunk(id, b64) {
+  const writable = writers.get(id);
+  if (!writable) throw new Error('no open writer ' + id);
+  // Decoding via fetch avoids a multi-megabyte atob + per-byte copy loop.
+  const buf = await (await fetch('data:application/octet-stream;base64,' + b64)).arrayBuffer();
+  await writable.write(buf);
+}
+
+async function fsEnd(id, abort) {
+  const writable = writers.get(id);
+  if (!writable) throw new Error('no open writer ' + id);
+  writers.delete(id);
+  if (abort) {
+    try { await writable.abort(); } catch (e) { /* already failing */ }
+    return null;
+  }
+  await writable.close();
+  return true;
 }

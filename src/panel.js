@@ -7,7 +7,6 @@
   // Cached so a click handler can decide what to do without awaiting first:
   // opening a folder picker needs the click's transient activation.
   let folderState = 'none';
-  let folderName = '';
 
   const HTML = [
     '<div class="tgmd-head">',
@@ -29,7 +28,7 @@
     '    <button class="tgmd-btn tgmd-sm" data-act="retry">Retry failed</button>',
     '  </div>',
     '  <details class="tgmd-log"><summary>Log</summary><pre></pre></details>',
-    '  <button class="tgmd-link" data-act="folder">Save folder: not set (using Downloads)</button>',
+    '  <button class="tgmd-link" data-act="folder">Saving to Downloads/Telegram/&lt;group&gt;</button>',
     '  <button class="tgmd-link" data-act="clearhistory">Clear history for this chat</button>',
     '  <button class="tgmd-link" data-act="probeprompt">Diagnose the save prompt</button>',
     '</div>'
@@ -52,6 +51,12 @@
 
     refreshHistoryLabel();
     refreshFolderLabel();
+
+    // Coming back from the setup tab must update this without a page reload.
+    window.addEventListener('focus', () => {
+      if (root.TGMD.core && root.TGMD.core.resetFsState) root.TGMD.core.resetFsState();
+      refreshFolderLabel();
+    });
   }
 
   // ------------------------------------------------------------- rendering
@@ -98,61 +103,20 @@
 
   async function refreshFolderLabel() {
     const btn = el && $('[data-act="folder"]');
-    const fsa = root.TGMD.fsa;
-    if (!fsa || !fsa.supported()) {
-      folderState = 'unsupported';
-      if (btn) btn.textContent = 'Save folder: unsupported — using Downloads';
-      return;
-    }
-    folderState = await fsa.permission();
-    const h = await fsa.handle();
-    folderName = (h && h.name) || '';
     if (!btn) return;
+    // The state lives in the service worker: it owns the folder handle,
+    // because a content script cannot even see the picker API.
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'TGMD_FS_STATUS' });
+      folderState = (r && r.ok) ? r.state : 'none';
+    } catch (e) {
+      folderState = 'none';
+    }
     btn.textContent =
-      folderState === 'granted' ? 'Saving to "' + folderName + '" — no prompts. Change\u2026'
-      : folderState === 'prompt' ? 'Save folder "' + folderName + '" — click to re-allow'
-      : 'Save folder: NOT SET — downloads will prompt. Choose\u2026';
+      folderState === 'granted' ? 'Writing straight to your folder \u2014 no prompts. Change\u2026'
+      : folderState === 'prompt' ? 'Folder access expired \u2014 click to re-allow'
+      : 'Brave asks to save every file. Click to pick a folder and stop that.';
     btn.classList.toggle('tgmd-warn', folderState !== 'granted');
-  }
-
-  // Opening the picker, and re-granting access, both require the click's
-  // transient activation — so the API call must be made before this awaits.
-  async function pickFolder(opts) {
-    opts = opts || {};
-    const fsa = root.TGMD.fsa;
-    if (!fsa || !fsa.supported()) {
-      status('No folder-picker API in this browser — using Downloads');
-      return false;
-    }
-    let pending;
-    try {
-      pending = folderState === 'prompt' ? fsa.ensurePermission() : fsa.choose();
-    } catch (e) {
-      status('Folder picker refused: ' + (e.message || e));
-      return false;
-    }
-    try {
-      const granted = await pending;
-      await refreshFolderLabel();
-      if (granted === false) {
-        status('Folder access not granted — using Downloads');
-        return false;
-      }
-      status('Saving to "' + folderName + '" — no prompts');
-      return true;
-    } catch (e) {
-      await refreshFolderLabel();
-      const name = String(e && e.name) + ' ' + String(e && e.message);
-      if (/abort/i.test(name)) {
-        if (!opts.quiet) status('Folder choice cancelled — using Downloads');
-      } else {
-        // Never swallow this: a failure here is exactly why files would keep
-        // going through the prompting path.
-        status('Folder error: ' + (e.message || e));
-        logLine('FOLDER ERROR ' + name);
-      }
-      return false;
-    }
   }
 
   // --------------------------------------------------------------- actions
@@ -179,16 +143,17 @@
 
     // Both of these need the click's transient activation, so they run before
     // anything else in this function awaits.
-    if (act === 'folder') { await pickFolder(); return; }
-
-    if (act === 'all' || act === 'download-selected') {
-      // Falling back to the downloads API silently is what let six files
-      // prompt again, so ask for a folder here rather than hoping the link
-      // at the bottom was noticed.
-      if (folderState === 'prompt' || folderState === 'none') {
-        await pickFolder({ quiet: true });
-      }
+    // The picker does not exist in a content script, so open the extension's
+    // own page, which can show it.
+    if (act === 'folder') {
+      await chrome.runtime.sendMessage({ type: 'TGMD_OPEN_SETUP' });
+      status('Pick a folder in the tab that just opened, then come back here.');
+      return;
     }
+
+    // Only re-grant an already-chosen folder. Downloads must never be
+    // interrupted by a folder picker: the destination is fixed at
+    // Downloads/Telegram/<group> and works with no configuration at all.
 
     if (act === 'all') {
       await runWith(null);

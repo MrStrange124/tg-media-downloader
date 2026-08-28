@@ -91,15 +91,73 @@
   }
 
   // ------------------------------------------------------------------- save
-  // Two ways to put bytes on disk. When the user has granted a folder we write
-  // straight into it, which involves no browser download and therefore cannot
-  // be interrupted by a save dialog. Otherwise fall back to chrome.downloads so
-  // the extension still works with no folder configured.
+  // Extension messaging is JSON only, so the bytes are moved as base64 in
+  // bounded chunks and streamed to disk by the service worker. 4 MB keeps each
+  // message well inside limits while holding memory flat for large videos.
+  const FS_CHUNK = 4 * 1024 * 1024;
+
+  function chunkToBase64(chunk) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).split(',')[1] || '');
+      fr.onerror = () => reject(fr.error || new Error('chunk encode failed'));
+      fr.readAsDataURL(chunk);
+    });
+  }
+
+  async function writeToDisk(filename, blob) {
+    const begin = await chrome.runtime.sendMessage({
+      type: 'TGMD_FS_BEGIN', filename: filename
+    });
+    if (!begin || !begin.ok) throw new Error((begin && begin.error) || 'could not open file');
+
+    try {
+      for (let at = 0; at < blob.size; at += FS_CHUNK) {
+        const b64 = await chunkToBase64(blob.slice(at, Math.min(at + FS_CHUNK, blob.size)));
+        const res = await chrome.runtime.sendMessage({
+          type: 'TGMD_FS_CHUNK', id: begin.id, b64: b64
+        });
+        if (!res || !res.ok) throw new Error((res && res.error) || 'chunk write failed');
+      }
+    } catch (e) {
+      // Leaving a half-written file behind would look like a successful save.
+      try {
+        await chrome.runtime.sendMessage({ type: 'TGMD_FS_END', id: begin.id, abort: true });
+      } catch (e2) { /* already failing */ }
+      throw e;
+    }
+
+    const end = await chrome.runtime.sendMessage({ type: 'TGMD_FS_END', id: begin.id });
+    if (!end || !end.ok) throw new Error((end && end.error) || 'could not close file');
+    return begin.path;
+  }
+
+  // Whether a folder is granted. Cached per page load; the panel clears it
+  // after the setup tab is used.
+  let fsState = null;
+  async function fsReady() {
+    if (fsState === null) {
+      try {
+        const r = await chrome.runtime.sendMessage({ type: 'TGMD_FS_STATUS' });
+        fsState = (r && r.ok) ? r.state : 'none';
+      } catch (e) {
+        fsState = 'none';
+      }
+    }
+    return fsState === 'granted';
+  }
+
+  // Two ways to put bytes on disk. With a granted folder we write straight
+  // into it -- no browser download exists, so nothing can prompt. Otherwise
+  // fall back to chrome.downloads so an unconfigured install still works.
   async function saveBlob(blob, filename) {
-    const fsa = root.TGMD.fsa;
-    if (fsa && await fsa.ready()) {
-      const path = await fsa.write(filename, blob);
-      return { mode: 'disk', path: path };
+    if (await fsReady()) {
+      try {
+        return { mode: 'disk', path: await writeToDisk(filename, blob) };
+      } catch (e) {
+        // Never lose the file over a disk-write problem.
+        console.warn('[TGMD] disk write failed, falling back to downloads', e);
+      }
     }
 
     const blobUrl = URL.createObjectURL(blob);
@@ -483,6 +541,8 @@
     clearChatHistory: clearChatHistory,
     historyCount: historyCount,
     fetchMedia: fetchMedia,
+    resetFsState: function () { fsState = null; },
+    fsReady: fsReady,
     saveBlob: saveBlob,
     get swFetchWorks() { return swFetchWorks; }
   };
@@ -509,6 +569,27 @@
       }
     }
   });
+
+  // Write a capability snapshot to extension storage on every load. The
+  // File System Access path silently did nothing on the target machine and
+  // there was no way to tell "API missing" from "picker refused" after the
+  // fact; this records the answer without anyone having to run a diagnostic.
+  (async function recordCaps() {
+    const caps = {
+      at: new Date().toISOString(),
+      version: (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '?',
+      // Expected to be undefined here: pickers are not exposed to content
+      // scripts. Recorded so a regression is visible rather than inferred.
+      showDirectoryPicker: typeof root.showDirectoryPicker
+    };
+    try {
+      const r = await chrome.runtime.sendMessage({ type: 'TGMD_FS_STATUS' });
+      caps.workerFolderState = (r && r.ok) ? r.state : ('error: ' + (r && r.error));
+    } catch (e) {
+      caps.workerFolderState = 'error: ' + (e.message || e);
+    }
+    try { await chrome.storage.local.set({ 'diag:caps': caps }); } catch (e) { /* nothing to do */ }
+  })();
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => root.TGMD.panel.mount());

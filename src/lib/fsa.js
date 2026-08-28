@@ -3,22 +3,23 @@
 
   // Direct-to-disk saving via the File System Access API.
   //
-  // Why this exists: chrome.downloads.download({saveAs:false}) still produced a
-  // confirmation dialog for every file on the target machine, and no setting,
-  // permission or argument change suppressed it. Writing through a directory
-  // handle bypasses the browser download system entirely, so there is nothing
-  // left to prompt. The user grants a folder once; the handle is persisted and
-  // reused. Large media streams to disk instead of being buffered as a Blob.
+  // Placement matters and was got wrong once already: showDirectoryPicker and
+  // showSaveFilePicker are NOT exposed to content scripts. A capability probe
+  // on the target machine reported both as "undefined" while FileSystemHandle
+  // itself was a function -- the interfaces exist, the entry points do not. So
+  // picking a folder must happen in an extension page, while writing happens
+  // in the service worker, which can read the stored handle and open writable
+  // streams. This module is loaded in both and only offers what each can do.
 
-  const DB_NAME = 'tgmd';
+  const DB_NAME = 'tgmd-fs';
   const DB_VERSION = 1;
   const STORE = 'handles';
   const KEY = 'outputDir';
 
   // ------------------------------------------------------------ pure helpers
   // Split a relative path into directory segments plus a leaf filename.
-  // Empty and dot segments are dropped: they cannot be created as directories
-  // and "." would silently resolve to the parent.
+  // Empty, "." and ".." segments are dropped: they cannot be created as
+  // directories, and ".." would escape the folder the user granted.
   function splitPath(relPath) {
     const parts = String(relPath == null ? '' : relPath)
       .split('/')
@@ -28,8 +29,7 @@
     return { dirs: parts, name: name };
   }
 
-  // "a.jpg" -> "a (1).jpg" -> "a (2).jpg". Matches the shape of Chrome's
-  // uniquify so filenames stay familiar.
+  // "a.jpg" -> "a (1).jpg". Mirrors Chrome's uniquify so names stay familiar.
   function nextCandidate(name, n) {
     if (n <= 0) return name;
     const dot = name.lastIndexOf('.');
@@ -52,47 +52,45 @@
     });
   }
 
-  function idbPut(key, value) {
+  function tx(mode, fn) {
     return openDb().then((db) => new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).put(value, key);
-      tx.oncomplete = () => { db.close(); resolve(true); };
-      tx.onerror = () => { db.close(); reject(tx.error); };
-    }));
-  }
-
-  function idbGet(key) {
-    return openDb().then((db) => new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readonly');
-      const req = tx.objectStore(STORE).get(key);
-      req.onsuccess = () => { db.close(); resolve(req.result || null); };
-      req.onerror = () => { db.close(); reject(req.error); };
-    }));
-  }
-
-  function idbDelete(key) {
-    return openDb().then((db) => new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite');
-      tx.objectStore(STORE).delete(key);
-      tx.oncomplete = () => { db.close(); resolve(true); };
-      tx.onerror = () => { db.close(); reject(tx.error); };
+      const t = db.transaction(STORE, mode);
+      let out;
+      try { out = fn(t.objectStore(STORE)); } catch (e) { reject(e); return; }
+      t.oncomplete = () => { db.close(); resolve(out && out.result !== undefined ? out.result : out); };
+      t.onerror = () => { db.close(); reject(t.error); };
     }));
   }
 
   // -------------------------------------------------------------- handles
-  const supported = () => typeof root.showDirectoryPicker === 'function';
+  // Pickers exist only in extension pages.
+  const canPick = () => typeof root.showDirectoryPicker === 'function';
 
-  let cached = null;
+  let cached;
 
-  async function handle() {
-    if (cached) return cached;
-    cached = await idbGet(KEY);
+  async function getHandle() {
+    if (cached !== undefined) return cached;
+    try {
+      cached = (await tx('readonly', (s) => s.get(KEY))) || null;
+    } catch (e) {
+      cached = null;
+    }
     return cached;
   }
 
-  // 'granted' | 'prompt' | 'denied' | 'none'
+  async function setHandle(h) {
+    cached = h;
+    await tx('readwrite', (s) => s.put(h, KEY));
+  }
+
+  async function clearHandle() {
+    cached = null;
+    await tx('readwrite', (s) => s.delete(KEY));
+  }
+
+  // 'none' | 'granted' | 'prompt' | 'denied'
   async function permission() {
-    const h = await handle();
+    const h = await getHandle();
     if (!h) return 'none';
     try {
       return await h.queryPermission({ mode: 'readwrite' });
@@ -101,11 +99,9 @@
     }
   }
 
-  // Must be called from a user gesture when the answer may be 'prompt'.
-  // Chrome forgets the grant across browser restarts, so this is a once-per-
-  // session click rather than a once-ever one.
-  async function ensurePermission() {
-    const h = await handle();
+  // Extension pages only: requestPermission needs transient activation.
+  async function requestPermission() {
+    const h = await getHandle();
     if (!h) return false;
     try {
       if (await h.queryPermission({ mode: 'readwrite' }) === 'granted') return true;
@@ -115,31 +111,18 @@
     }
   }
 
-  // Show the folder picker and remember the choice. User gesture required.
-  async function choose() {
-    if (!supported()) throw new Error('this browser has no File System Access API');
+  // Extension pages only. Must be called directly from a user gesture.
+  async function pick() {
+    if (!canPick()) throw new Error('no folder picker in this context');
     const h = await root.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
-    cached = h;
-    await idbPut(KEY, h);
+    await setHandle(h);
     return h;
-  }
-
-  async function forget() {
-    cached = null;
-    await idbDelete(KEY);
-  }
-
-  async function ready() {
-    if (!supported()) return false;
-    return (await permission()) === 'granted';
   }
 
   // ---------------------------------------------------------------- writing
   async function dirFor(rootHandle, dirs) {
     let dir = rootHandle;
-    for (const seg of dirs) {
-      dir = await dir.getDirectoryHandle(seg, { create: true });
-    }
+    for (const seg of dirs) dir = await dir.getDirectoryHandle(seg, { create: true });
     return dir;
   }
 
@@ -152,42 +135,35 @@
     }
   }
 
-  // Writes `blob` at `relPath` beneath the chosen folder, creating directories
-  // as needed. Returns the path actually written, which may differ from the
-  // request when uniquifying around an existing file.
-  async function write(relPath, blob, opts) {
+  // Opens a writable stream at `relPath` beneath the granted folder, creating
+  // directories as needed. Returns the stream plus the path actually used,
+  // which may differ from the request when uniquifying around an existing file.
+  async function openWriter(relPath, opts) {
     opts = opts || {};
-    const h = await handle();
+    const h = await getHandle();
     if (!h) throw new Error('no output folder chosen');
-    if (!await ensurePermission()) throw new Error('folder permission not granted');
+    if (await permission() !== 'granted') throw new Error('folder permission not granted');
 
-    const { dirs, name } = splitPath(relPath);
-    const dir = await dirFor(h, dirs);
+    const parts = splitPath(relPath);
+    const dir = await dirFor(h, parts.dirs);
 
-    let finalName = name;
+    let finalName = parts.name;
     if (opts.conflict !== 'overwrite') {
       for (let n = 0; n < 1000; n++) {
-        const candidate = nextCandidate(name, n);
+        const candidate = nextCandidate(parts.name, n);
         if (!await exists(dir, candidate)) { finalName = candidate; break; }
       }
     }
 
     const fileHandle = await dir.getFileHandle(finalName, { create: true });
     const writable = await fileHandle.createWritable();
-    try {
-      await writable.write(blob);
-    } catch (e) {
-      try { await writable.abort(); } catch (e2) { /* already failing */ }
-      throw e;
-    }
-    await writable.close();
-    return dirs.concat(finalName).join('/');
+    return { writable: writable, path: parts.dirs.concat(finalName).join('/') };
   }
 
   const api = {
     splitPath, nextCandidate,
-    supported, handle, permission, ensurePermission,
-    choose, forget, ready, write
+    canPick, getHandle, setHandle, clearHandle,
+    permission, requestPermission, pick, openWriter
   };
   root.TGMD = root.TGMD || {};
   root.TGMD.fsa = api;

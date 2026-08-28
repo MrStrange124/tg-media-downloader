@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TG Media Downloader",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Download photos, videos and GIFs from Telegram Web A at full quality, with no download prompts.",
   "permissions": [
     "downloads",
@@ -41,7 +41,6 @@
         "src/lib/stream-url.js",
         "src/lib/range-fetch.js",
         "src/lib/dedupe.js",
-        "src/lib/fsa.js",
         "src/lib/scroll.js",
         "src/selectors.js",
         "src/select.js",
