@@ -57,7 +57,35 @@
     },
 
     advance() { sendKey('ArrowRight'); },
-    close()   { sendKey('Escape'); }
+
+    // Closing must be verified, not assumed: synthetic KeyboardEvents carry
+    // isTrusted:false and some handlers ignore them. Escalate until the
+    // viewer is actually gone, because a stuck viewer swallows every
+    // subsequent tile click.
+    async close() {
+      const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+      const attempt = async (fn) => {
+        try { fn(); } catch (e) { /* keep escalating */ }
+        await nap(350);
+        return !viewer.isOpen();
+      };
+
+      if (!viewer.isOpen()) return true;
+      if (await attempt(() => sendKey('Escape'))) return true;
+      if (await attempt(() => {
+        const init = { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true };
+        window.dispatchEvent(new KeyboardEvent('keydown', init));
+      })) return true;
+
+      const btn = document.querySelector(
+        '#MediaViewer button[aria-label*="Close" i], #MediaViewer button[title*="Close" i]');
+      if (btn && await attempt(() => btn.click())) return true;
+
+      // Web A pushes a history entry for the viewer.
+      if (await attempt(() => history.back())) return true;
+
+      return !viewer.isOpen();
+    }
   };
 
   function sendKey(key) {
@@ -85,20 +113,46 @@
       return candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
     },
 
-    // Tiles are anything that renders media. Video thumbnails are kept — the
-    // tile is only a click target; real bytes come from the viewer.
+    // One tile per media element. Walking up from the media element and
+    // stopping before any ancestor that holds a second one prevents several
+    // thumbnails collapsing onto a shared wrapper — closest() would pick the
+    // nearest matching ancestor and silently merge them into one tile.
     tiles() {
       const c = grid.container();
       if (!c) return [];
-      const seen = new Set();
       const out = [];
-      for (const el of qa('img, video, [style*="background-image"]', c)) {
-        const tile = el.closest('[class*="Media"], a, div') || el;
-        if (seen.has(tile)) continue;
-        seen.add(tile);
-        out.push(tile);
+      const seenMedia = new Set();
+
+      for (const media of qa('img, video', c)) {
+        if (seenMedia.has(media)) continue;
+        seenMedia.add(media);
+
+        let el = media;
+        for (let hop = 0; hop < 4; hop++) {
+          const parent = el.parentElement;
+          if (!parent || parent === c) break;
+          if (parent.querySelectorAll('img, video').length > 1) break;
+          el = parent;
+        }
+        out.push(el);
       }
       return out;
+    },
+
+    // Identity for a tile. The grid is virtualised, so element references go
+    // stale across scrolling — this string does not.
+    tileKey(tile) {
+      if (!tile) return null;
+      if (tile.tagName === 'IMG' && tile.src) return tile.src;
+      const img = tile.querySelector && tile.querySelector('img');
+      if (img && img.src) return img.src;
+      const vid = tile.querySelector && tile.querySelector('video');
+      if (vid && (vid.poster || vid.src)) return vid.poster || vid.src;
+      try {
+        const bg = getComputedStyle(tile).backgroundImage;
+        if (bg && bg !== 'none') return bg;
+      } catch (e) { /* detached node */ }
+      return null;
     }
   };
 

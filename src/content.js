@@ -147,25 +147,24 @@
   }
 
   // ------------------------------------------------------------- run engine
+  //
+  // The shared-media grid is virtualised: scrolling recycles tile elements out
+  // of the DOM. So we never hold element references across a scroll. Identity
+  // is the tile's thumbnail URL — a string that stays correct even when the
+  // underlying node is reused for a different item.
+  //
+  // Navigation is click-per-tile rather than ArrowRight. ArrowRight walks every
+  // media item in the chat, which is simply wrong for a selected subset, and it
+  // depends on synthetic key events being honoured.
+
   const state = { running: false, paused: false, abort: null };
+  const MAX_ITEMS = 5000;
 
-  async function enumerate(opts) {
-    opts = opts || {};
-    const c = selectors.grid.container();
-    if (!c) throw new Error('shared-media grid not found — open chat info then Media');
+  const tileKey = (t) => selectors.grid.tileKey(t);
 
-    const tracker = scroll.makeStabilityTracker({ needed: 3 });
-    for (let i = 0; i < 2000; i++) {
-      c.scrollTop = c.scrollHeight;
-      await sleep(350);
-      if (opts.onCount) opts.onCount(selectors.grid.tiles().length);
-      if (tracker.push({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight })) break;
-    }
-    return selectors.grid.tiles().length;
-  }
-
-  async function waitForMedia(timeoutMs) {
-    const deadline = Date.now() + (timeoutMs || 20000);
+  async function openTile(tile) {
+    tile.click();
+    const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
       const d = selectors.viewer.descriptor();
       if (d && d.url) return d;
@@ -174,62 +173,147 @@
     return null;
   }
 
+  async function pauseGate() {
+    while (state.paused && state.running) await sleep(300);
+  }
+
+  // Sweeps the grid top to bottom, processing every tile it can reach. When
+  // `wantKeys` is given, only those tiles are downloaded — everything else is
+  // skipped, but the sweep still runs so selections anywhere in the grid are
+  // reachable.
   async function start(opts) {
     opts = opts || {};
     const onEvent = opts.onEvent || function () {};
+    const wantKeys = opts.tileKeys || null;
     if (state.running) throw new Error('a run is already in progress');
     state.running = true;
     state.paused = false;
     state.abort = new AbortController();
 
     const summary = { total: 0, saved: 0, skipped: 0, failed: [] };
+    const done = new Set();
+
     try {
-      let list = opts.tiles;
-      if (!list) {
-        await enumerate({ onCount: (n) => onEvent({ type: 'progress', enumerated: n }) });
-        list = selectors.grid.tiles();
-      }
-      summary.total = list.length;
-      if (!list.length) throw new Error('no media tiles found');
+      const c = selectors.grid.container();
+      if (!c) throw new Error('shared-media grid not found — open chat info then Media');
 
-      list[0].click();
-      await sleep(600);
+      await selectors.viewer.close();
+      c.scrollTop = 0;
+      await sleep(700);
 
-      for (let i = 0; i < list.length && state.running; i++) {
-        while (state.paused && state.running) await sleep(300);
+      let idleRounds = 0;
+
+      while (state.running && summary.total < MAX_ITEMS) {
+        await pauseGate();
         if (!state.running) break;
 
-        const desc = await waitForMedia();
-        if (!desc) {
-          summary.failed.push({ filename: 'item ' + (i + 1), error: 'media did not load in 20s' });
-          onEvent({ type: 'item', index: i, ok: false, error: 'timeout' });
-        } else {
-          try {
-            const res = await downloadCurrent({
-              signal: state.abort.signal,
-              onProgress: (p) => onEvent({ type: 'progress', index: i, received: p.received, total: p.total })
-            });
-            if (!res.ok) throw new Error(res.error);
-            if (res.skipped) summary.skipped++; else summary.saved++;
-            onEvent({ type: 'item', index: i, ok: true, filename: res.filename, skipped: !!res.skipped });
-          } catch (e) {
-            const msg = String(e && e.message || e);
-            summary.failed.push({ filename: 'item ' + (i + 1), error: msg });
-            onEvent({ type: 'item', index: i, ok: false, error: msg });
+        let progressed = false;
+
+        // Snapshot keys, not elements: the element list goes stale the moment
+        // the viewer opens and the grid re-renders behind it.
+        const keysThisPass = selectors.grid.tiles()
+          .map(tileKey)
+          .filter((k) => k && !done.has(k) && (!wantKeys || wantKeys.has(k)));
+
+        for (const key of keysThisPass) {
+          if (!state.running) break;
+          await pauseGate();
+          if (!state.running) break;
+
+          // Re-find the tile by key — it may have been recycled since the snapshot.
+          const tile = selectors.grid.tiles().find((t) => tileKey(t) === key);
+          if (!tile || !document.contains(tile)) continue;
+
+          done.add(key);
+          progressed = true;
+          summary.total++;
+          onEvent({ type: 'progress', enumerated: summary.total });
+
+          const desc = await openTile(tile);
+          if (!desc) {
+            summary.failed.push({ filename: 'item ' + summary.total, error: 'viewer did not open' });
+            onEvent({ type: 'item', index: summary.total - 1, ok: false, error: 'viewer did not open' });
+          } else {
+            try {
+              const res = await downloadCurrent({
+                signal: state.abort.signal,
+                onProgress: (p) => onEvent({
+                  type: 'progress', index: summary.total - 1,
+                  received: p.received, total: p.total
+                })
+              });
+              if (!res.ok) throw new Error(res.error);
+              if (res.skipped) summary.skipped++; else summary.saved++;
+              onEvent({
+                type: 'item', index: summary.total - 1, ok: true,
+                filename: res.filename, skipped: !!res.skipped
+              });
+            } catch (e) {
+              const msg = String(e && e.message || e);
+              summary.failed.push({ filename: 'item ' + summary.total, error: msg });
+              onEvent({ type: 'item', index: summary.total - 1, ok: false, error: msg });
+            }
           }
+
+          // A viewer left open swallows the next tile click.
+          const closed = await selectors.viewer.close();
+          if (!closed) {
+            onEvent({ type: 'item', index: summary.total - 1, ok: false,
+                      error: 'could not close the media viewer — stopping' });
+            state.running = false;
+            break;
+          }
+          await sleep(250);
         }
 
-        if (i < list.length - 1 && state.running) {
-          selectors.viewer.advance();
-          await sleep(400);
+        if (wantKeys && done.size >= wantKeys.size) break;
+        if (!state.running) break;
+
+        // Advance the grid window by most of a viewport.
+        const before = c.scrollTop;
+        c.scrollTop = Math.min(c.scrollHeight, c.scrollTop + Math.max(200, c.clientHeight * 0.8));
+        await sleep(800);
+        const atBottom = (c.scrollTop + c.clientHeight) >= (c.scrollHeight - 4);
+        const stuck = c.scrollTop === before;
+
+        if (!progressed && (atBottom || stuck)) {
+          idleRounds++;
+          if (idleRounds >= 3) break;
+        } else {
+          idleRounds = 0;
         }
       }
     } finally {
       state.running = false;
-      selectors.viewer.close();
+      await selectors.viewer.close();
       onEvent({ type: 'done', summary: summary });
     }
     return summary;
+  }
+
+  // Counts distinct media tiles by sweeping the grid. Kept for the diagnostics
+  // and for anyone wanting a total before committing to a run.
+  async function enumerate(opts) {
+    opts = opts || {};
+    const c = selectors.grid.container();
+    if (!c) throw new Error('shared-media grid not found — open chat info then Media');
+
+    const keys = new Set();
+    const tracker = scroll.makeStabilityTracker({ needed: 3 });
+    c.scrollTop = 0;
+    await sleep(500);
+
+    for (let i = 0; i < 2000; i++) {
+      for (const t of selectors.grid.tiles()) {
+        const k = tileKey(t);
+        if (k) keys.add(k);
+      }
+      if (opts.onCount) opts.onCount(keys.size);
+      c.scrollTop = Math.min(c.scrollHeight, c.scrollTop + Math.max(200, c.clientHeight * 0.8));
+      await sleep(350);
+      if (tracker.push({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight })) break;
+    }
+    return keys.size;
   }
 
   root.TGMD.core = {

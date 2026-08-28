@@ -1,19 +1,41 @@
 {
   "manifest_version": 3,
   "name": "TG Media Downloader",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Download photos, videos and GIFs from Telegram Web A at full quality, with no download prompts.",
-  "permissions": ["downloads", "storage", "scripting"],
-  "host_permissions": ["https://web.telegram.org/*"],
-  "background": { "service_worker": "src/background.js" },
-  "action": { "default_popup": "src/popup.html", "default_title": "TG Media Downloader" },
-  "icons": { "128": "icons/icon128.png" },
+  "permissions": [
+    "downloads",
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://web.telegram.org/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "TG Media Downloader"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  },
   "web_accessible_resources": [
-    { "resources": ["src/fetcher-main.js"], "matches": ["https://web.telegram.org/*"] }
+    {
+      "resources": [
+        "src/fetcher-main.js"
+      ],
+      "matches": [
+        "https://web.telegram.org/*"
+      ]
+    }
   ],
   "content_scripts": [
     {
-      "matches": ["https://web.telegram.org/a/*"],
+      "matches": [
+        "https://web.telegram.org/a/*"
+      ],
       "js": [
         "src/lib/naming.js",
         "src/lib/stream-url.js",
@@ -25,7 +47,9 @@
         "src/panel.js",
         "src/content.js"
       ],
-      "css": ["src/ui.css"],
+      "css": [
+        "src/ui.css"
+      ],
       "run_at": "document_idle"
     }
   ]

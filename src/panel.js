@@ -64,12 +64,12 @@
     el.querySelector('.tgmd-fail-count').textContent = failures.length + ' failed';
   }
 
-  async function runWith(tiles) {
+  async function runWith(tileKeys) {
     failures = [];
     showFailures();
     setRunning(true);
     try {
-      await root.TGMD.run.start({ tiles: tiles, onEvent: handleEvent });
+      await root.TGMD.run.start({ tileKeys: tileKeys, onEvent: handleEvent });
     } catch (e) {
       status('Error: ' + e.message);
     } finally {
@@ -81,10 +81,10 @@
     if (act === 'all') {
       await runWith(null);
     } else if (act === 'download-selected') {
-      const tiles = root.TGMD.select.chosen();
-      if (!tiles.length) return;
+      const keys = root.TGMD.select.chosen();
+      if (!keys.size) return;
       root.TGMD.select.toggle();
-      await runWith(tiles);
+      await runWith(keys);
     } else if (act === 'select') {
       root.TGMD.select.toggle();
     } else if (act === 'pause') {
@@ -102,7 +102,7 @@
 
   function handleEvent(ev) {
     if (ev.type === 'progress' && ev.enumerated != null) {
-      status('Enumerating… ' + ev.enumerated + ' found');
+      status('Working… ' + ev.enumerated + ' found so far');
     } else if (ev.type === 'progress' && ev.total) {
       fill(ev.received / ev.total);
     } else if (ev.type === 'item') {

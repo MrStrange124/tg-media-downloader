@@ -125,7 +125,7 @@
     }
   }
 
-  sel.viewer.close();
+  await sel.viewer.close();
   await sleep(400);
   step('closed', !sel.viewer.isOpen(), null);
 
