@@ -4,6 +4,6 @@
   "private": true,
   "description": "Download photos, videos and GIFs from Telegram Web A",
   "scripts": {
-    "test": "node --test tests/"
+    "test": "node --test tests/*.test.js"
   }
 }
