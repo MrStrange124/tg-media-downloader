@@ -1,0 +1,5 @@
+.tgmd-popup { width: 320px; font: 13px system-ui, sans-serif; padding: 12px; }
+.tgmd-popup h1 { font-size: 14px; margin: 0 0 10px; }
+.tgmd-popup button { width: 100%; padding: 8px; cursor: pointer; }
+.tgmd-popup button + button { margin-top: 6px; }
+.tgmd-popup pre { white-space: pre-wrap; font-size: 11px; color: #444; margin: 10px 0 0; max-height: 340px; overflow: auto; }
