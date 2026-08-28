@@ -3,3 +3,41 @@
 .tgmd-popup button { width: 100%; padding: 8px; cursor: pointer; }
 .tgmd-popup button + button { margin-top: 6px; }
 .tgmd-popup pre { white-space: pre-wrap; font-size: 11px; color: #444; margin: 10px 0 0; max-height: 340px; overflow: auto; }
+
+.tgmd-panel {
+  position: fixed; right: 16px; bottom: 16px; z-index: 2147483000;
+  width: 300px; background: #1e1e1e; color: #eee; border-radius: 10px;
+  font: 12px system-ui, sans-serif; box-shadow: 0 6px 24px rgba(0,0,0,.45);
+}
+.tgmd-head { display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px; border-bottom: 1px solid #333; }
+.tgmd-title { font-weight: 600; }
+.tgmd-collapse { background: none; border: 0; color: #aaa; cursor: pointer; font-size: 16px; }
+.tgmd-collapsed .tgmd-body { display: none; }
+.tgmd-body { padding: 10px; }
+.tgmd-panel .tgmd-btn { width: 100%; padding: 7px; margin-bottom: 6px; cursor: pointer;
+  background: #2d7ff9; color: #fff; border: 0; border-radius: 5px; font: inherit; }
+.tgmd-panel .tgmd-btn:hover { background: #1f6fe0; }
+.tgmd-status { margin: 6px 0; color: #bbb; }
+.tgmd-bar { height: 5px; background: #333; border-radius: 3px; overflow: hidden; }
+.tgmd-fill { height: 100%; width: 0; background: #35c46a; transition: width .2s; }
+.tgmd-controls { display: flex; gap: 6px; margin-top: 8px; }
+.tgmd-failures { margin-top: 8px; color: #ff8a80; }
+.tgmd-hidden { display: none; }
+.tgmd-log pre { max-height: 140px; overflow: auto; background: #141414;
+  padding: 6px; border-radius: 4px; font-size: 11px; color: #ccc; }
+
+.tgmd-check {
+  position: absolute; top: 6px; left: 6px; width: 20px; height: 20px;
+  border: 2px solid #fff; border-radius: 4px; background: rgba(0,0,0,.35);
+  cursor: pointer; z-index: 10;
+}
+.tgmd-check.tgmd-checked { background: #2d7ff9; border-color: #2d7ff9; }
+.tgmd-check.tgmd-checked::after {
+  content: '\2713'; color: #fff; font-size: 14px; line-height: 20px;
+  display: block; text-align: center;
+}
+
+.tgmd-popup hr { border: 0; border-top: 1px solid #ddd; margin: 12px 0 8px; }
+.tgmd-popup label { display: block; margin: 8px 0 2px; font-size: 11px; color: #666; }
+.tgmd-popup input { width: 100%; padding: 5px; box-sizing: border-box; font: inherit; }
