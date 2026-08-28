@@ -36,3 +36,19 @@
   outline-offset: -4px !important;
   filter: brightness(0.65) saturate(1.2) !important;
 }
+
+/* --- panel controls: pause / stop / clear are permanent, not run-only --- */
+.tgmd-controls { display: flex; gap: 6px; margin-top: 8px; }
+.tgmd-panel .tgmd-sm { flex: 1; margin-bottom: 0; padding: 6px 4px; font-size: 11px; }
+.tgmd-panel .tgmd-ghost { background: #3a3a3a; }
+.tgmd-panel .tgmd-ghost:hover { background: #484848; }
+.tgmd-panel .tgmd-btn:disabled {
+  background: #2f2f2f; color: #777; cursor: not-allowed;
+}
+.tgmd-panel .tgmd-btn:disabled:hover { background: #2f2f2f; }
+.tgmd-link {
+  display: block; width: 100%; margin-top: 8px; padding: 4px 0;
+  background: none; border: 0; color: #8ab4f8; cursor: pointer;
+  font: inherit; font-size: 11px; text-align: left; text-decoration: underline;
+}
+.tgmd-link:hover { color: #adc9fb; }

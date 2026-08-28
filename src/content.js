@@ -316,8 +316,28 @@
     return keys.size;
   }
 
+  // Wipes this chat's download records so its media downloads again.
+  async function clearChatHistory() {
+    const chatId = selectors.chat.id();
+    if (!chatId) throw new Error('no chat open');
+    const all = await chrome.storage.local.get(null);
+    const keys = Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0);
+    if (keys.length) await chrome.storage.local.remove(keys);
+    return keys.length;
+  }
+
+  // How many items of this chat are already recorded as downloaded.
+  async function historyCount() {
+    const chatId = selectors.chat.id();
+    if (!chatId) return 0;
+    const all = await chrome.storage.local.get(null);
+    return Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0).length;
+  }
+
   root.TGMD.core = {
     downloadCurrent: downloadCurrent,
+    clearChatHistory: clearChatHistory,
+    historyCount: historyCount,
     fetchMedia: fetchMedia,
     saveBlob: saveBlob,
     get swFetchWorks() { return swFetchWorks; }
