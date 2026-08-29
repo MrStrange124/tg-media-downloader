@@ -105,10 +105,8 @@ document.getElementById('clearhistory').addEventListener('click', async () => {
   out.textContent = '';
   try {
     const tabId = await activeTabId();
-    // Delegate to the content script rather than editing storage from here.
-    // The content script holds the chat's ledger in memory for the length of a
-    // run; deleting the key underneath it would be undone by the next flush,
-    // and it already knows how to count what it removed.
+    // Delegated: the content script holds the ledger in memory, so deleting the
+    // key from here would be undone by its next flush.
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
       func: async () => {

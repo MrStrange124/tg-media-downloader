@@ -37,9 +37,8 @@
       const slide = viewer.activeSlide();
       if (!slide) return null;
 
-      // A real player always carries the id; the poster placeholder that
-      // MediaViewerContent.renderVideoPreview() paints while the URL is still
-      // resolving is a bare <video> with only a background-image.
+      // A real player carries the id; renderVideoPreview()'s placeholder is a
+      // bare <video> with only a background-image.
       const video = q(S.VIEWER_VIDEO, slide) || q('video', slide);
       if (video) return { el: video, kind: 'video' };
 
@@ -65,10 +64,8 @@
       };
     },
 
-    // Closing must be verified, not assumed: synthetic KeyboardEvents carry
-    // isTrusted:false and some handlers ignore them. Escalate until the
-    // viewer is actually gone, because a stuck viewer swallows every
-    // subsequent tile click.
+    // Verified, not assumed: synthetic KeyboardEvents carry isTrusted:false and
+    // some handlers ignore them. A stuck viewer swallows every later tile click.
     async close() {
       const nap = (ms) => new Promise((r) => setTimeout(r, ms));
       const attempt = async (fn) => {
@@ -150,9 +147,8 @@
       return t ? t.closest(S.SCROLLER) : null;
     },
 
-    // The tile's own id — `shared-media` + `message-<messageId>`. Unique,
-    // stable, and unaffected by virtualisation recycling the node, which is
-    // exactly what a thumbnail URL was not.
+    // `shared-media` + `message-<messageId>`: unique, stable, and unaffected
+    // by virtualisation recycling the node.
     tileKey(tile) {
       return tile && tile.id ? tile.id : null;
     },

@@ -3,13 +3,9 @@
 
   // Direct-to-disk saving via the File System Access API.
   //
-  // Placement matters and was got wrong once already: showDirectoryPicker and
-  // showSaveFilePicker are NOT exposed to content scripts. A capability probe
-  // on the target machine reported both as "undefined" while FileSystemHandle
-  // itself was a function -- the interfaces exist, the entry points do not. So
-  // picking a folder must happen in an extension page, while writing happens
-  // in the service worker, which can read the stored handle and open writable
-  // streams. This module is loaded in both and only offers what each can do.
+  // The pickers are not exposed to content scripts, so picking a folder must
+  // happen in an extension page while writing happens in the service worker,
+  // which can read the stored handle. Loaded in both, offering what each can do.
 
   const DB_NAME = 'tgmd-fs';
   const DB_VERSION = 1;
@@ -17,9 +13,8 @@
   const KEY = 'outputDir';
 
   // ------------------------------------------------------------ pure helpers
-  // Split a relative path into directory segments plus a leaf filename.
-  // Empty, "." and ".." segments are dropped: they cannot be created as
-  // directories, and ".." would escape the folder the user granted.
+  // Directory segments plus a leaf. Empty, "." and ".." are dropped — ".."
+  // would escape the granted folder.
   function splitPath(relPath) {
     const parts = String(relPath == null ? '' : relPath)
       .split('/')
@@ -135,9 +130,8 @@
     }
   }
 
-  // Opens a writable stream at `relPath` beneath the granted folder, creating
-  // directories as needed. Returns the stream plus the path actually used,
-  // which may differ from the request when uniquifying around an existing file.
+  // Opens a writable stream beneath the granted folder, creating directories as
+  // needed. The returned path may differ from the request after uniquifying.
   async function openWriter(relPath, opts) {
     opts = opts || {};
     const h = await getHandle();

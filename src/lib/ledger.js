@@ -1,18 +1,13 @@
-// A per-chat record of what has already been saved.
+// A per-chat record of what has already been saved. Two indexes, answering
+// different questions at different costs:
 //
-// Two indexes, because they answer different questions at different costs:
+//   tiles[tileKey]      "done this grid cell?" — answerable from the grid
+//                       alone, so a re-run skips it without opening anything.
+//   content[contentKey] "saved these bytes?" — catches the same file forwarded
+//                       twice, but only once the viewer has resolved a URL.
 //
-//   tiles[tileKey]      "have I already done this grid cell?" Answerable from
-//                       the grid alone, before the viewer opens. This is what
-//                       makes a second run over a 1000-item group cheap: known
-//                       tiles are dropped during the scan and never opened.
-//
-//   content[contentKey] "have I already saved these bytes?" Catches the same
-//                       file forwarded into the chat twice under two message
-//                       ids, but only once the viewer has resolved a URL.
-//
-// Stored as one object per chat rather than one key per item: 1000 separate
-// keys made every count and every clear a full scan of extension storage.
+// One object per chat, not one key per item: 1000 keys made every count and
+// every clear a full scan of extension storage.
 (function (root) {
   'use strict';
 
@@ -30,9 +25,9 @@
     };
   }
 
-  // Layout before this version: one flat key per item, `<chatId>:<contentKey>`
-  // holding the filename. Folded into the content index so upgrading never
-  // makes a chat download itself again. Returns the legacy keys to delete.
+  // The old layout: one flat key per item, `<chatId>:<contentKey>` holding the
+  // filename. Folded in so upgrading never re-downloads a chat. Returns the
+  // legacy keys to delete.
   function foldLegacy(data, all, chatId) {
     const prefix = chatId + ':';
     const found = [];
@@ -57,8 +52,7 @@
       rec[keyFor(chatId)] = data;
       await storage.set(rec);
       dirty = false;
-      // Only after the ledger is safely written — otherwise a failed set()
-      // between the two would lose the history it was migrating.
+      // Only once the ledger is written: a failed set() would lose the history.
       if (legacy.length) {
         await storage.remove(legacy);
         legacy = [];
@@ -90,8 +84,7 @@
       if (!target) throw new Error('no chat open');
       const all = await storage.get(null);
       const stale = Object.keys(all || {}).filter((k) => k.indexOf(target + ':') === 0);
-      // For the open chat, count what is held in memory: it may carry notes
-      // from the current run that have not been flushed yet.
+      // The open chat may carry notes from this run that are not flushed yet.
       const held = target === chatId ? data : normalise((all || {})[keyFor(target)]);
       const n = countIn(held) + stale.length;
       await storage.remove([keyFor(target)].concat(stale));
@@ -112,8 +105,7 @@
     };
   }
 
-  // A tile and its content are the same download counted twice, so the ledger's
-  // size is the number of distinct tiles plus any content seen without one.
+  // A tile and its content are one download, not two.
   function countIn(data) {
     const seen = new Set();
     for (const k of Object.keys(data.tiles)) {

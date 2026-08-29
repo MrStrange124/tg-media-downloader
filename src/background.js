@@ -1,8 +1,7 @@
 'use strict';
 
-// The File System Access handle lives in extension storage and is usable
-// here: the service worker can open writable streams even though it cannot
-// show a picker. Granting happens in src/setup.html.
+// The worker can open writable streams from the stored handle even though it
+// cannot show a picker. Granting happens in src/setup.html.
 importScripts('lib/fsa.js');
 
 // downloadId -> { blobUrl, filename, retried }
@@ -35,9 +34,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Reports what Brave actually recorded about recent downloads. The decisive
-  // field is byExtensionId: if a download that prompted has none, it was
-  // page-initiated and did not come from this extension at all.
+  // byExtensionId is the decisive field: a prompted download with none was
+  // page-initiated and did not come from this extension.
   if (msg && msg.type === 'TGMD_DOWNLOAD_AUDIT') {
     chrome.downloads.search({ limit: 10, orderBy: ['-startTime'] })
       .then((items) => sendResponse({
@@ -61,9 +59,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // Timed download probe. A blob download of 1 KB completes in milliseconds
-  // unless Chromium stops to ask the user where to put it, so elapsed time is
-  // a direct, objective measurement of whether a file picker appeared.
+  // A 1 KB blob download completes in milliseconds unless Chromium stopped to
+  // ask, so elapsed time measures whether a picker appeared.
   if (msg && msg.type === 'TGMD_PROBE') {
     probeOne(msg)
       .then(sendResponse)
@@ -204,9 +201,8 @@ async function probeOne(msg) {
 }
 
 // ------------------------------------------------- direct-to-disk writing
-// Extension messaging is JSON, so binary cannot cross contexts directly.
-// The content script sends base64 chunks and each is streamed to disk here,
-// which keeps memory bounded no matter how large the video is.
+// Extension messaging is JSON, so the content script sends base64 chunks and
+// each is streamed to disk here, keeping memory bounded.
 const writers = new Map();
 let writerSeq = 0;
 

@@ -46,10 +46,8 @@
     let name = parts.join('_');
     if (!originalName) name += '.' + extFromMime(mime);
 
-    // 'flat' emits no directory component at all, folding the group into the
-    // filename. Not needed to avoid save dialogs -- a controlled probe showed
-    // path shape makes no difference -- but kept for anyone who wants a single
-    // folder.
+    // 'flat' folds the group into the filename instead of a directory. Path
+    // shape has no bearing on save dialogs; it is just a preference.
     if (layout === 'flat') {
       return sanitizeSegment('Telegram - ' + folder + ' - ' + name);
     }

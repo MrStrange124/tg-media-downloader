@@ -37,11 +37,9 @@
     announce();
   }
 
-  // The grid cell is a real element with its own class and id, so resolving a
-  // click is just closest(). Earlier versions tried to infer the cell by
-  // counting media descendants, which could never work: Media.tsx always
-  // renders two <img> per tile (thumbnail + full), so a "exactly one media
-  // element" test matched the wrong node or nothing at all.
+  // The grid cell carries its own class and id, so resolving a click is just
+  // closest(). Counting media descendants cannot work: Media.tsx renders two
+  // <img> per tile, thumbnail and full.
   function tileFromEvent(e) {
     const node = e.target;
     return node && node.closest ? node.closest(sel().S.TILE) : null;
@@ -67,8 +65,7 @@
   function attach() {
     if (!sel().grid.tiles().length) return false;
     clickHook = onGridClick;
-    // Document-level capture fires before Telegram's own tile handler
-    // regardless of how the grid is nested or re-created.
+    // Capture fires before Telegram's own handler, however the grid is nested.
     document.addEventListener('click', clickHook, true);
     const watched = sel().grid.scroller() || document.body;
     observer = new MutationObserver(() => { if (active) repaint(); });

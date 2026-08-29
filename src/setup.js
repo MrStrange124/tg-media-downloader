@@ -2,8 +2,8 @@
 
 const fsa = globalThis.TGMD.fsa;
 const stateEl = document.getElementById('state');
-// Cached so the click handler can branch without awaiting first: both the
-// picker and requestPermission need the click's transient activation.
+// Cached so the handler can branch without awaiting: the picker and
+// requestPermission both need the click's transient activation.
 let cachedState = 'none';
 const noteEl = document.getElementById('note');
 
@@ -33,8 +33,7 @@ async function render() {
 }
 
 document.getElementById('choose').addEventListener('click', async () => {
-  // Issued before this handler awaits anything, so the click's activation is
-  // still live when the browser checks for it.
+  // Issued before any await, so the click's activation is still live.
   const pending = cachedState === 'prompt' ? fsa.requestPermission() : fsa.pick();
   try {
     const granted = await pending;

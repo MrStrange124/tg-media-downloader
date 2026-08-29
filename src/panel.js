@@ -53,8 +53,7 @@
   const $ = (s) => el.querySelector(s);
   const status = (t) => { if (el) $('.tgmd-status').textContent = t; };
   const fill = (r) => {
-    // Late failures can be appended past the planned total; a bar wider than
-    // its track would spill out of the panel.
+    // Late failures can be appended past the planned total.
     if (el) $('.tgmd-fill').style.width = Math.round(Math.min(1, Math.max(0, r)) * 100) + '%';
   };
   const logLine = (t) => {
@@ -93,10 +92,9 @@
     }
   }
 
-  // Brave defaults "Ask where to save each file before downloading" to ON,
-  // where Chromium defaults it off, and the pref is absent from Preferences
-  // while it sits at that default -- so it cannot be read, only measured.
-  // A blob download finishes in tens of milliseconds unless a dialog opened.
+  // Brave defaults "Ask where to save each file" to ON, and the pref is absent
+  // from Preferences while at that default, so it can only be measured: a blob
+  // download finishes in tens of milliseconds unless a dialog opened.
   const SLOW_SAVE_MS = 1500;
 
   function warnIfPrompting(ms) {
@@ -131,13 +129,6 @@
   async function onAction(act, btn) {
     if (btn.disabled) return;
 
-    // Both of these need the click's transient activation, so they run before
-    // anything else in this function awaits.
-
-    // Only re-grant an already-chosen folder. Downloads must never be
-    // interrupted by a folder picker: the destination is fixed at
-    // Downloads/Telegram/<group> and works with no configuration at all.
-
     if (act === 'all') {
       await runWith(null);
 
@@ -161,8 +152,7 @@
       status('Stopping…');
 
     } else if (act === 'clear') {
-      // Resets the panel only. Downloaded-history is a separate, explicit
-      // action — conflating them would silently destroy resume state.
+      // Panel only: clearing download history is a separate, explicit action.
       if (running) { status('Stop the run before clearing.'); return; }
       failures = [];
       showFailures();
@@ -196,17 +186,14 @@
       }
 
     } else if (act === 'retry') {
-      // Safe and cheap: the ledger skips every tile already saved during the
-      // scan, so a plain re-run visits only the gaps.
+      // The ledger skips saved tiles during the scan, so this visits only gaps.
       await runWith(null);
     }
   }
 
   // ---------------------------------------------------------------- events
-  //
-  // A run now reports a real total before it starts fetching, so the bar
-  // tracks items completed rather than the bytes of whichever file happens to
-  // be in flight. Byte progress goes in the status line, where it belongs.
+  // The bar tracks items completed against the total the scan found; byte
+  // progress goes in the status line.
   let queued = 0;
   let atItem = '';
 
@@ -223,8 +210,8 @@
 
     } else if (ev.type === 'planned') {
       queued = ev.queued;
-      // A selection run has no "already saved" number to report: the tiles it
-      // leaves out are the ones you did not tick, not ones the ledger knows.
+      // A selection run leaves out unticked tiles, not ones the ledger knows,
+      // so it has no "already saved" number to report.
       if (ev.mode === 'selection') {
         logLine('scan: ' + ev.scanned + ' tiles · ' + ev.queued + ' selected');
         status(ev.queued
@@ -257,8 +244,7 @@
       if (ev.total) fill((ev.index + 1) / ev.total);
       if (ev.ok) {
         let note = '';
-        // Make the origin of each download visible: a save dialog on a file
-        // that is not ours means the prompt is page-initiated.
+        // A save dialog on a file that is not ours means a page-initiated prompt.
         if (ev.audit && ev.audit.ok) {
           if (!ev.audit.ours) note = '  [NOT OURS: ' + (ev.audit.byExtensionId || 'page-initiated') + ']';
           else if (ev.audit.danger && ev.audit.danger !== 'safe') note = '  [danger: ' + ev.audit.danger + ']';
@@ -290,8 +276,7 @@
       if (s.retried) {
         logLine('retry pass recovered ' + (s.retried - s.failed.length) + ' of ' + s.retried);
       }
-      // Answers the save-prompt question without anyone having to run a
-      // separate audit: it names whoever Brave credits for these downloads.
+      // Names whoever Brave credits for these downloads.
       if (ev.audit) {
         if (!ev.audit.foreign.length) {
           logLine('AUDIT: all ' + ev.audit.checked + ' recent downloads came from this extension '
