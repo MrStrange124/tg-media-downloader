@@ -90,7 +90,10 @@
       if (!target) throw new Error('no chat open');
       const all = await storage.get(null);
       const stale = Object.keys(all || {}).filter((k) => k.indexOf(target + ':') === 0);
-      const n = countIn(normalise((all || {})[keyFor(target)])) + stale.length;
+      // For the open chat, count what is held in memory: it may carry notes
+      // from the current run that have not been flushed yet.
+      const held = target === chatId ? data : normalise((all || {})[keyFor(target)]);
+      const n = countIn(held) + stale.length;
       await storage.remove([keyFor(target)].concat(stale));
       if (target === chatId) { data = empty(); dirty = false; legacy = []; }
       return n;

@@ -7,7 +7,6 @@
   const rangeFetch = root.TGMD.rangeFetch;
   const naming = root.TGMD.naming;
   const dedupe = root.TGMD.dedupe;
-  const scroll = root.TGMD.scroll;
 
   // One record per chat, held in memory for the length of a run and flushed
   // periodically -- writing the whole ledger after every item would rewrite
@@ -289,10 +288,15 @@
   // loading. Photos are ready almost immediately; videos get far longer.
   const OPEN_TIMEOUT = { image: 20000, gif: 60000, video: 180000 };
 
-  async function openTile(tile, kind) {
+  // An item that already failed once is unlikely to need the full budget the
+  // second time, and in a large run those minutes are the whole cost of a
+  // handful of dead videos.
+  const RETRY_TIMEOUT = 45000;
+
+  async function openTile(tile, kind, budgetMs) {
     tile.click();
     const started = Date.now();
-    const budget = OPEN_TIMEOUT[kind] || OPEN_TIMEOUT.image;
+    const budget = budgetMs || OPEN_TIMEOUT[kind] || OPEN_TIMEOUT.image;
     let last = null;
 
     let stable = null;
@@ -311,10 +315,6 @@
       // The click never landed at all — fail in seconds rather than burning a
       // three-minute video budget waiting on a viewer that never opened.
       if (last.stage === 'viewer-closed' && Date.now() - started > 6000) break;
-      // A player that mounted and then reported NO_SOURCE is not going to
-      // resolve. Waiting out the full video budget only delays its retry.
-      if (last.stage === 'video-player-mounted-no-url' && last.networkState === 3
-          && Date.now() - started > 20000) break;
       await sleep(200);
     }
 
@@ -358,7 +358,6 @@
     if (!c) throw new Error('shared-media grid not found — open chat info, then the Media tab');
 
     const seen = new Map();
-    const tracker = scroll.makeStabilityTracker({ needed: 3 });
     c.scrollTop = 0;
     await sleep(500);
 
@@ -368,9 +367,12 @@
       return true;
     };
 
+    let idle = 0;
     for (let i = 0; i < 4000; i++) {
       await pauseGate();
       if (live && !live()) break;
+
+      const before = seen.size;
       for (const t of selectors.grid.tiles()) {
         const k = tileKey(t);
         // First sighting wins: the earliest scrollTop that revealed a tile is
@@ -382,9 +384,22 @@
       if (onCount) onCount(seen.size);
       if (seen.size >= MAX_ITEMS || haveAllWanted()) break;
 
-      c.scrollTop = Math.min(c.scrollHeight, c.scrollTop + Math.max(200, c.clientHeight * 0.8));
-      await sleep(350);
-      if (tracker.push({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight })) break;
+      const top = c.scrollTop;
+      c.scrollTop = Math.min(c.scrollHeight, top + Math.max(200, c.clientHeight * 0.8));
+      const bottom = (c.scrollTop + c.clientHeight) >= (c.scrollHeight - 4);
+      // The bottom is where Telegram asks for the next page of shared media,
+      // so it gets a longer settle. Ending the scan a second early truncates
+      // the chat, and the run would then report the partial list as the whole
+      // of it -- a silent, permanent-looking "everything is already saved".
+      await sleep(bottom ? 900 : 350);
+
+      // Geometry going still is not enough on its own: the grid stops growing
+      // for a moment every time a page is in flight.
+      if (seen.size === before && (bottom || c.scrollTop === top)) {
+        if (++idle >= 3) break;
+      } else {
+        idle = 0;
+      }
     }
     return Array.from(seen.values());
   }
@@ -420,11 +435,20 @@
   }
 
   async function processEntry(entry, ctx) {
+    // The viewer must be gone before the click. Left open it swallows the
+    // click, and openTile then sees the previous item still on screen -- its
+    // URL already stable, so the two-poll guard passes -- and hands back the
+    // wrong descriptor. That would record the previous file under this tile's
+    // key in the ledger, hiding this tile's media from every run after.
+    if (selectors.viewer.isOpen() && !(await closeViewer())) {
+      return { ok: false, error: 'the previous item\'s viewer would not close', stuck: true };
+    }
+
     const tile = await ensureTile(entry, ctx.c);
     if (!tile) return { ok: false, error: 'tile scrolled out of reach' };
 
     try {
-      await openTile(tile, entry.kind || selectors.grid.tileKind(tile));
+      await openTile(tile, entry.kind || selectors.grid.tileKind(tile), ctx.budget);
     } catch (e) {
       return { ok: false, error: String(e && e.message || e), mediaState: e.mediaState || null };
     }
@@ -481,10 +505,10 @@
       const plan = wantKeys
         ? all.filter((e) => wantKeys.has(e.key))
         : all.filter((e) => force || !ledger.hasTile(e.key));
-      summary.known = all.length - plan.length;
+      summary.known = wantKeys ? 0 : all.length - plan.length;
       summary.queued = plan.length;
-      onEvent({ type: 'planned', scanned: all.length, known: summary.known,
-                queued: plan.length });
+      onEvent({ type: 'planned', mode: wantKeys ? 'selection' : 'all',
+                scanned: all.length, known: summary.known, queued: plan.length });
 
       const ctx = { c: c, force: force || !!wantKeys, onEvent: onEvent };
       const retry = [];
@@ -492,6 +516,7 @@
       let index = 0;
 
       const runPass = async (entries, pass) => {
+        let handled = 0;
         for (const entry of entries) {
           if (!state.running) break;
           await pauseGate();
@@ -522,7 +547,9 @@
             }));
           }
 
-          if (await closeViewer()) {
+          // processEntry already exhausted closeViewer() when it reports
+          // `stuck`; a third attempt here would just cost another three seconds.
+          if (!res.stuck && await closeViewer()) {
             closeFails = 0;
           } else {
             closeFails++;
@@ -540,12 +567,15 @@
           // Flushing every tenth item bounds how much is lost if the tab is
           // closed mid-run, without rewriting the whole ledger a thousand times.
           if ((index % 10) === 0) await ledger.flush();
+          handled++;
           await sleep(250);
         }
+        return handled;
       };
 
       await runPass(plan, 1);
 
+      let retried = 0;
       if (retry.length && state.running) {
         // Most failures are transient: a video whose URL had not resolved yet,
         // a tile that scrolled away mid-fetch, a fetch that timed out under
@@ -553,7 +583,19 @@
         summary.retried = retry.length;
         summary.queued += retry.length;
         onEvent({ type: 'phase', phase: 'retry', count: retry.length });
-        await runPass(retry, 2);
+        ctx.budget = RETRY_TIMEOUT;
+        retried = await runPass(retry, 2);
+      }
+
+      // Whatever was queued for retry but never got its second pass -- the
+      // user pressed Stop, or the page wedged -- is still a failure. Counting
+      // it only inside runPass would let those items disappear from the
+      // summary entirely and leave the panel claiming a clean run.
+      for (const entry of retry.slice(retried)) {
+        summary.failed.push({ key: entry.key, error: 'queued for retry, but the run ended first' });
+        onEvent({ type: 'item', index: index++, total: summary.queued, pass: 2,
+                  ok: false, willRetry: false,
+                  error: 'queued for retry, but the run ended first' });
       }
     } finally {
       state.running = false;

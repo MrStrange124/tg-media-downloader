@@ -53,7 +53,9 @@
   const $ = (s) => el.querySelector(s);
   const status = (t) => { if (el) $('.tgmd-status').textContent = t; };
   const fill = (r) => {
-    if (el) $('.tgmd-fill').style.width = Math.round(r * 100) + '%';
+    // Late failures can be appended past the planned total; a bar wider than
+    // its track would spill out of the panel.
+    if (el) $('.tgmd-fill').style.width = Math.round(Math.min(1, Math.max(0, r)) * 100) + '%';
   };
   const logLine = (t) => {
     if (!el) return;
@@ -221,11 +223,20 @@
 
     } else if (ev.type === 'planned') {
       queued = ev.queued;
-      logLine('scan: ' + ev.scanned + ' tiles · ' + ev.known + ' already saved · '
-              + ev.queued + ' queued');
-      status(ev.queued
-        ? ev.scanned + ' media · ' + ev.known + ' already saved · ' + ev.queued + ' to fetch'
-        : ev.scanned + ' media — every one of them is already saved');
+      // A selection run has no "already saved" number to report: the tiles it
+      // leaves out are the ones you did not tick, not ones the ledger knows.
+      if (ev.mode === 'selection') {
+        logLine('scan: ' + ev.scanned + ' tiles · ' + ev.queued + ' selected');
+        status(ev.queued
+          ? ev.queued + ' selected to fetch'
+          : 'none of the selected tiles are in this grid');
+      } else {
+        logLine('scan: ' + ev.scanned + ' tiles · ' + ev.known + ' already saved · '
+                + ev.queued + ' queued');
+        status(ev.queued
+          ? ev.scanned + ' media · ' + ev.known + ' already saved · ' + ev.queued + ' to fetch'
+          : ev.scanned + ' media — every one of them is already saved');
+      }
       fill(0);
 
     } else if (ev.type === 'phase' && ev.phase === 'retry') {

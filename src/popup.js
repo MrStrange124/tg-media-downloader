@@ -105,24 +105,26 @@ document.getElementById('clearhistory').addEventListener('click', async () => {
   out.textContent = '';
   try {
     const tabId = await activeTabId();
+    // Delegate to the content script rather than editing storage from here.
+    // The content script holds the chat's ledger in memory for the length of a
+    // run; deleting the key underneath it would be undone by the next flush,
+    // and it already knows how to count what it removed.
     const results = await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      func: () => {
-        const m = location.hash.replace('#', '').match(/^-?\d+/);
-        return m ? m[0] : null;
+      func: async () => {
+        const core = globalThis.TGMD && globalThis.TGMD.core;
+        if (!core) return { ok: false, error: 'not loaded in this tab — refresh it' };
+        try {
+          return { ok: true, n: await core.clearChatHistory() };
+        } catch (e) {
+          return { ok: false, error: String((e && e.message) || e) };
+        }
       }
     });
-    const chatId = results && results[0] && results[0].result;
-    if (!chatId) { log('no chat open'); return; }
-    // The chat's ledger, plus any per-item keys left by a version that
-    // predates it and has not been migrated yet.
-    const all = await chrome.storage.local.get(null);
-    const ledgerKey = 'led:' + chatId;
-    const led = all[ledgerKey];
-    const legacy = Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0);
-    const n = (led && led.tiles ? Object.keys(led.tiles).length : 0) + legacy.length;
-    await chrome.storage.local.remove([ledgerKey].concat(legacy));
-    log('cleared ' + n + ' records for chat ' + chatId);
+    const r = results && results[0] && results[0].result;
+    if (!r) { log('FAILED — no response from the page'); return; }
+    if (!r.ok) { log('FAILED — ' + r.error); return; }
+    log('cleared ' + r.n + ' records for this chat');
   } catch (e) {
     log('FAILED — ' + e.message);
   }

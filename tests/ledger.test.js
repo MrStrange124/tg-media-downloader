@@ -126,3 +126,14 @@ test('a corrupt stored value degrades to empty rather than throwing', async () =
   await led.open('-100123');
   assert.strictEqual(led.size(), 0);
 });
+
+test('forget counts notes that have not been flushed yet', async () => {
+  const storage = fakeStorage({});
+  const led = ledger.create(storage);
+  await led.open('-100123');
+  led.note('shared-mediamessage-7', 'abc123', 'cat.jpg');
+  led.note('shared-mediamessage-8', 'def456', 'dog.jpg');
+  // Deliberately no flush: mid-run this is the normal state.
+  assert.strictEqual(await led.forget(), 2);
+  assert.strictEqual(led.size(), 0);
+});
