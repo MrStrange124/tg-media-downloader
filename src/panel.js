@@ -194,19 +194,56 @@
       }
 
     } else if (act === 'retry') {
-      // Resume makes this safe: saved items are skipped, so re-running
-      // retries exactly the failures.
+      // Safe and cheap: the ledger skips every tile already saved during the
+      // scan, so a plain re-run visits only the gaps.
       await runWith(null);
     }
   }
 
   // ---------------------------------------------------------------- events
+  //
+  // A run now reports a real total before it starts fetching, so the bar
+  // tracks items completed rather than the bytes of whichever file happens to
+  // be in flight. Byte progress goes in the status line, where it belongs.
+  let queued = 0;
+  let atItem = '';
+
+  const mb = (n) => (Math.round(n / 104857.6) / 10) + ' MB';
+
   function handleEvent(ev) {
-    if (ev.type === 'progress' && ev.enumerated != null) {
-      status('Working… ' + ev.enumerated + ' found so far');
+    if (ev.type === 'phase' && ev.phase === 'scan') {
+      queued = 0;
+      status('Scanning the grid…');
+      fill(0);
+
+    } else if (ev.type === 'scan') {
+      status('Scanning… ' + ev.found + ' media found');
+
+    } else if (ev.type === 'planned') {
+      queued = ev.queued;
+      logLine('scan: ' + ev.scanned + ' tiles · ' + ev.known + ' already saved · '
+              + ev.queued + ' queued');
+      status(ev.queued
+        ? ev.scanned + ' media · ' + ev.known + ' already saved · ' + ev.queued + ' to fetch'
+        : ev.scanned + ' media — every one of them is already saved');
+      fill(0);
+
+    } else if (ev.type === 'phase' && ev.phase === 'retry') {
+      logLine('retrying ' + ev.count + ' failed item' + (ev.count === 1 ? '' : 's'));
+      status('Retrying ' + ev.count + ' failed…');
+
+    } else if (ev.type === 'item-start') {
+      atItem = (ev.pass === 2 ? 'Retry ' : '') + (ev.index + 1) + ' of ' + (ev.total || queued);
+      status(atItem);
+
+    } else if (ev.type === 'note') {
+      logLine(ev.text);
+
     } else if (ev.type === 'progress' && ev.total) {
-      fill(ev.received / ev.total);
+      status(atItem + ' · ' + mb(ev.received) + ' of ' + mb(ev.total));
+
     } else if (ev.type === 'item') {
+      if (ev.total) fill((ev.index + 1) / ev.total);
       if (ev.ok) {
         let note = '';
         // Make the origin of each download visible: a save dialog on a file
@@ -220,16 +257,28 @@
         logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '')
                 + via + took + note);
         warnIfPrompting(ev.saveMs);
+      } else if (ev.willRetry) {
+        // Not a failure yet — it gets another go once the queue is drained.
+        logLine('deferred item ' + (ev.index + 1) + ': ' + ev.error);
+        if (ev.mediaState) logLine('        state: ' + JSON.stringify(ev.mediaState));
       } else {
         logLine('FAILED item ' + (ev.index + 1) + ': ' + ev.error);
         if (ev.mediaState) logLine('        state: ' + JSON.stringify(ev.mediaState));
         failures.push(ev);
+        showFailures();
       }
-      showFailures();
+
     } else if (ev.type === 'done') {
       const s = ev.summary;
-      status('Done — ' + s.saved + ' saved, ' + s.skipped + ' already had, ' + s.failed.length + ' failed');
+      const bits = [s.saved + ' saved'];
+      if (s.skipped) bits.push(s.skipped + ' already had');
+      if (s.known) bits.push(s.known + ' skipped from history');
+      if (s.failed.length) bits.push(s.failed.length + ' failed');
+      status('Done — ' + bits.join(', '));
       fill(1);
+      if (s.retried) {
+        logLine('retry pass recovered ' + (s.retried - s.failed.length) + ' of ' + s.retried);
+      }
       // Answers the save-prompt question without anyone having to run a
       // separate audit: it names whoever Brave credits for these downloads.
       if (ev.audit) {

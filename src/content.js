@@ -9,6 +9,11 @@
   const dedupe = root.TGMD.dedupe;
   const scroll = root.TGMD.scroll;
 
+  // One record per chat, held in memory for the length of a run and flushed
+  // periodically -- writing the whole ledger after every item would rewrite
+  // 150 KB a thousand times over.
+  const ledger = root.TGMD.ledger.create(chrome.storage.local);
+
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ------------------------------------------------- MAIN-world fetch bridge
@@ -196,25 +201,31 @@
     const chatId = selectors.chat.id();
     if (!chatId) return { ok: false, error: 'could not determine chat id' };
 
-    const messageKey = await dedupe.contentKey(desc.url);
-    const record = dedupe.recordKey(chatId, messageKey);
+    await ledger.open(chatId);
+    const contentKey = await dedupe.contentKey(desc.url);
 
-    const seen = await chrome.storage.local.get(record);
-    const previous = seen[record];
+    const previous = ledger.contentName(contentKey);
     if (previous && !opts.force) {
       // Only trust the record when it names the same kind of file we are about
       // to save. If a key ever collided across kinds, silently skipping would
       // drop the item entirely; re-downloading is the safe direction to err in.
       const wantExt = naming.extFromMime(desc.mime);
       const hadExt = String(previous).split('.').pop().toLowerCase();
-      if (hadExt === wantExt) return { ok: true, skipped: true, filename: previous };
+      if (hadExt === wantExt) {
+        // Record the tile even so. The bytes were already known by content,
+        // but knowing the *tile* is what lets the next run skip it from the
+        // grid without paying to open the viewer again.
+        ledger.note(opts.tileKey, contentKey, previous);
+        if (!opts.defer) await ledger.flush();
+        return { ok: true, skipped: true, filename: previous };
+      }
     }
 
     const cfg = await settings();
     let filename = naming.buildFilename({
       chatTitle: selectors.chat.title(),
       date: new Date(),
-      messageKey: messageKey,
+      messageKey: contentKey,
       originalName: desc.originalName,
       mime: desc.mime,
       layout: cfg.layout
@@ -239,23 +250,33 @@
         audit = await chrome.runtime.sendMessage({ type: 'TGMD_DOWNLOAD_INFO', id: saved.id });
       } catch (e) { /* audit is best effort */ }
     }
-    const rec = {};
-    rec[record] = written;
-    await chrome.storage.local.set(rec);
+
+    ledger.note(opts.tileKey, contentKey, written);
+    if (!opts.defer) await ledger.flush();
     return { ok: true, filename: written, bytes: blob.size, audit: audit,
              via: saved.mode, saveMs: saveMs };
   }
 
   // ------------------------------------------------------------- run engine
   //
-  // The shared-media grid is virtualised: scrolling recycles tile elements out
-  // of the DOM. So we never hold element references across a scroll. Identity
-  // is the tile's own id (`shared-media` + `message-<id>`, from Media.tsx),
-  // which stays correct even when the underlying node is reused.
+  // A run has three phases, deliberately separated. Earlier versions opened
+  // and downloaded each tile as the scroll reached it, which meant the total
+  // was never known, and a single wedged item could end the run with most of
+  // the chat still unvisited.
   //
-  // Navigation is click-per-tile rather than ArrowRight. ArrowRight walks every
-  // media item in the chat, which is simply wrong for a selected subset, and it
-  // depends on synthetic key events being honoured.
+  //   1. scan   sweep the grid top to bottom writing down every tile: its key,
+  //             its kind, and the scrollTop it was first seen at. No viewer,
+  //             no downloads, so it is cheap and gives an honest total.
+  //   2. plan   drop the tiles this chat's ledger already knows. On a group
+  //             that has been run before, most of the list disappears here
+  //             without opening anything.
+  //   3. fetch  walk the plan. A failure is queued, never fatal; the queue
+  //             gets one more pass at the end of the run.
+  //
+  // The grid is virtualised, so element references never survive a scroll.
+  // Identity is the tile's own id (`shared-media` + `message-<id>`, from
+  // Media.tsx), and the scrollTop recorded during the scan is how a tile that
+  // has since been recycled out of the DOM is brought back.
 
   const state = { running: false, paused: false, abort: null };
   const MAX_ITEMS = 5000;
@@ -290,6 +311,10 @@
       // The click never landed at all — fail in seconds rather than burning a
       // three-minute video budget waiting on a viewer that never opened.
       if (last.stage === 'viewer-closed' && Date.now() - started > 6000) break;
+      // A player that mounted and then reported NO_SOURCE is not going to
+      // resolve. Waiting out the full video budget only delays its retry.
+      if (last.stage === 'video-player-mounted-no-url' && last.networkState === 3
+          && Date.now() - started > 20000) break;
       await sleep(200);
     }
 
@@ -324,172 +349,241 @@
     while (state.paused && state.running) await sleep(300);
   }
 
-  // Sweeps the grid top to bottom, processing every tile it can reach. When
-  // `wantKeys` is given, only those tiles are downloaded — everything else is
-  // skipped, but the sweep still runs so selections anywhere in the grid are
-  // reachable.
+  // ------------------------------------------------------------ phase 1: scan
+  // Records where each tile was seen as well as that it exists. `need`, when
+  // given, ends the sweep as soon as those keys have all been found — a
+  // handful of ticked tiles should not pay for a scan of the whole group.
+  async function scanGrid(onCount, live, need) {
+    const c = selectors.grid.scroller();
+    if (!c) throw new Error('shared-media grid not found — open chat info, then the Media tab');
+
+    const seen = new Map();
+    const tracker = scroll.makeStabilityTracker({ needed: 3 });
+    c.scrollTop = 0;
+    await sleep(500);
+
+    const haveAllWanted = () => {
+      if (!need || !need.size) return false;
+      for (const k of need) if (!seen.has(k)) return false;
+      return true;
+    };
+
+    for (let i = 0; i < 4000; i++) {
+      await pauseGate();
+      if (live && !live()) break;
+      for (const t of selectors.grid.tiles()) {
+        const k = tileKey(t);
+        // First sighting wins: the earliest scrollTop that revealed a tile is
+        // the position most likely to reveal it again.
+        if (k && !seen.has(k)) {
+          seen.set(k, { key: k, kind: selectors.grid.tileKind(t), top: c.scrollTop });
+        }
+      }
+      if (onCount) onCount(seen.size);
+      if (seen.size >= MAX_ITEMS || haveAllWanted()) break;
+
+      c.scrollTop = Math.min(c.scrollHeight, c.scrollTop + Math.max(200, c.clientHeight * 0.8));
+      await sleep(350);
+      if (tracker.push({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight })) break;
+    }
+    return Array.from(seen.values());
+  }
+
+  // ----------------------------------------------------------- phase 3: fetch
+  // Brings a tile back into the DOM. Virtualisation may have recycled it since
+  // the scan, in which case the recorded scrollTop is where to look; the grid
+  // can also have reflowed, so a window either side of it is tried too.
+  async function ensureTile(entry, c) {
+    let tile = selectors.grid.byKey(entry.key);
+    if (tile) return tile;
+
+    const half = Math.max(100, c.clientHeight * 0.5);
+    for (const top of [entry.top, Math.max(0, entry.top - half), entry.top + half]) {
+      c.scrollTop = top;
+      for (let i = 0; i < 12; i++) {
+        await sleep(150);
+        tile = selectors.grid.byKey(entry.key);
+        if (tile) return tile;
+      }
+    }
+    return null;
+  }
+
+  // A stuck viewer swallows the next tile click, so it must actually close --
+  // but one wedged item is no reason to abandon the rest of the run. The
+  // second attempt is the one that matters: a video still loading ignores
+  // Escape until it settles, by which time close()'s own escalation is spent.
+  async function closeViewer() {
+    if (await selectors.viewer.close()) return true;
+    await sleep(1500);
+    return selectors.viewer.close();
+  }
+
+  async function processEntry(entry, ctx) {
+    const tile = await ensureTile(entry, ctx.c);
+    if (!tile) return { ok: false, error: 'tile scrolled out of reach' };
+
+    try {
+      await openTile(tile, entry.kind || selectors.grid.tileKind(tile));
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e), mediaState: e.mediaState || null };
+    }
+
+    try {
+      const res = await downloadCurrent({
+        tileKey: entry.key,
+        defer: true,
+        force: ctx.force,
+        signal: state.abort.signal,
+        onProgress: (p) => ctx.onEvent({
+          type: 'progress', received: p.received, total: p.total
+        })
+      });
+      if (!res.ok) throw new Error(res.error);
+      return res;
+    } catch (e) {
+      return { ok: false, error: String(e && e.message || e) };
+    }
+  }
+
   async function start(opts) {
     opts = opts || {};
     const onEvent = opts.onEvent || function () {};
     const wantKeys = opts.tileKeys || null;
     // Ticking tiles by hand is an explicit request for those files, so a
-    // selection run ignores the downloaded-already history.
+    // selection run ignores the ledger.
     const force = !!opts.force;
     if (state.running) throw new Error('a run is already in progress');
     state.running = true;
     state.paused = false;
     state.abort = new AbortController();
 
-    const summary = { total: 0, saved: 0, skipped: 0, failed: [] };
-    const done = new Set();
+    const summary = { scanned: 0, known: 0, queued: 0, saved: 0, skipped: 0,
+                      retried: 0, failed: [] };
 
     try {
-      // The tiles' grid div does not scroll; its .custom-scroll ancestor does.
       const c = selectors.grid.scroller();
       if (!c) throw new Error('shared-media grid not found — open chat info, then the Media tab');
+      const chatId = selectors.chat.id();
+      if (!chatId) throw new Error('could not determine chat id');
+      await ledger.open(chatId);
 
       await selectors.viewer.close();
-      c.scrollTop = 0;
-      await sleep(700);
 
-      let idleRounds = 0;
+      onEvent({ type: 'phase', phase: 'scan' });
+      const all = await scanGrid(
+        (n) => onEvent({ type: 'scan', found: n }),
+        () => state.running,
+        wantKeys);
+      summary.scanned = all.length;
+      if (!state.running) return summary;
 
-      while (state.running && summary.total < MAX_ITEMS) {
-        await pauseGate();
-        if (!state.running) break;
+      const plan = wantKeys
+        ? all.filter((e) => wantKeys.has(e.key))
+        : all.filter((e) => force || !ledger.hasTile(e.key));
+      summary.known = all.length - plan.length;
+      summary.queued = plan.length;
+      onEvent({ type: 'planned', scanned: all.length, known: summary.known,
+                queued: plan.length });
 
-        let progressed = false;
+      const ctx = { c: c, force: force || !!wantKeys, onEvent: onEvent };
+      const retry = [];
+      let closeFails = 0;
+      let index = 0;
 
-        // Snapshot keys, not elements: the element list goes stale the moment
-        // the viewer opens and the grid re-renders behind it.
-        const keysThisPass = selectors.grid.tiles()
-          .map(tileKey)
-          .filter((k) => k && !done.has(k) && (!wantKeys || wantKeys.has(k)));
-
-        for (const key of keysThisPass) {
+      const runPass = async (entries, pass) => {
+        for (const entry of entries) {
           if (!state.running) break;
           await pauseGate();
           if (!state.running) break;
 
-          // Re-find the tile by id — it may have been recycled since the snapshot.
-          const tile = selectors.grid.byKey(key);
-          if (!tile) continue;
+          onEvent({ type: 'item-start', index: index, total: summary.queued, pass: pass });
+          const res = await processEntry(entry, ctx);
+          index++;
 
-          done.add(key);
-          progressed = true;
-          summary.total++;
-          onEvent({ type: 'progress', enumerated: summary.total });
-
-          let desc = null;
-          try {
-            desc = await openTile(tile, selectors.grid.tileKind(tile));
-          } catch (e) {
-            const msg = String(e && e.message || e);
-            summary.failed.push({ filename: 'item ' + summary.total, error: msg });
-            onEvent({ type: 'item', index: summary.total - 1, ok: false,
-                      error: msg, mediaState: e.mediaState || null });
+          const ev = { type: 'item', index: index - 1, total: summary.queued, pass: pass };
+          if (res.ok) {
+            if (res.skipped) summary.skipped++; else summary.saved++;
+            onEvent(Object.assign(ev, {
+              ok: true, filename: res.filename, skipped: !!res.skipped,
+              audit: res.audit, via: res.via, saveMs: res.saveMs
+            }));
+          } else if (pass === 1) {
+            retry.push(entry);
+            onEvent(Object.assign(ev, {
+              ok: false, error: res.error, mediaState: res.mediaState || null,
+              willRetry: true
+            }));
+          } else {
+            summary.failed.push({ key: entry.key, error: res.error });
+            onEvent(Object.assign(ev, {
+              ok: false, error: res.error, mediaState: res.mediaState || null,
+              willRetry: false
+            }));
           }
-          if (desc) {
-            try {
-              const res = await downloadCurrent({
-                force: force,
-                signal: state.abort.signal,
-                onProgress: (p) => onEvent({
-                  type: 'progress', index: summary.total - 1,
-                  received: p.received, total: p.total
-                })
-              });
-              if (!res.ok) throw new Error(res.error);
-              if (res.skipped) summary.skipped++; else summary.saved++;
-              onEvent({
-                type: 'item', index: summary.total - 1, ok: true,
-                filename: res.filename, skipped: !!res.skipped, audit: res.audit,
-                via: res.via, saveMs: res.saveMs
-              });
-            } catch (e) {
-              const msg = String(e && e.message || e);
-              summary.failed.push({ filename: 'item ' + summary.total, error: msg });
-              onEvent({ type: 'item', index: summary.total - 1, ok: false, error: msg });
+
+          if (await closeViewer()) {
+            closeFails = 0;
+          } else {
+            closeFails++;
+            onEvent({ type: 'note',
+                      text: 'the media viewer would not close (' + closeFails + ' in a row)' });
+            // Three consecutive failures means the page itself is wedged, not
+            // this one item; everything after would fail the same way.
+            if (closeFails >= 3) {
+              onEvent({ type: 'note', text: 'stopping — the page has stopped responding' });
+              state.running = false;
+              break;
             }
           }
 
-          // A viewer left open swallows the next tile click.
-          const closed = await selectors.viewer.close();
-          if (!closed) {
-            onEvent({ type: 'item', index: summary.total - 1, ok: false,
-                      error: 'could not close the media viewer — stopping' });
-            state.running = false;
-            break;
-          }
+          // Flushing every tenth item bounds how much is lost if the tab is
+          // closed mid-run, without rewriting the whole ledger a thousand times.
+          if ((index % 10) === 0) await ledger.flush();
           await sleep(250);
         }
+      };
 
-        if (wantKeys && done.size >= wantKeys.size) break;
-        if (!state.running) break;
+      await runPass(plan, 1);
 
-        // Advance the grid window by most of a viewport.
-        const before = c.scrollTop;
-        c.scrollTop = Math.min(c.scrollHeight, c.scrollTop + Math.max(200, c.clientHeight * 0.8));
-        await sleep(800);
-        const atBottom = (c.scrollTop + c.clientHeight) >= (c.scrollHeight - 4);
-        const stuck = c.scrollTop === before;
-
-        if (!progressed && (atBottom || stuck)) {
-          idleRounds++;
-          if (idleRounds >= 3) break;
-        } else {
-          idleRounds = 0;
-        }
+      if (retry.length && state.running) {
+        // Most failures are transient: a video whose URL had not resolved yet,
+        // a tile that scrolled away mid-fetch, a fetch that timed out under
+        // load. One more pass at the end costs little and recovers most.
+        summary.retried = retry.length;
+        summary.queued += retry.length;
+        onEvent({ type: 'phase', phase: 'retry', count: retry.length });
+        await runPass(retry, 2);
       }
     } finally {
       state.running = false;
+      try { await ledger.flush(); } catch (e) { /* nothing further to do */ }
       await selectors.viewer.close();
       onEvent({ type: 'done', summary: summary, audit: await auditRecent() });
     }
     return summary;
   }
 
-  // Counts distinct media tiles by sweeping the grid. Kept for the diagnostics
-  // and for anyone wanting a total before committing to a run.
+  // Counts distinct media tiles without downloading anything.
   async function enumerate(opts) {
     opts = opts || {};
-    const c = selectors.grid.scroller();
-    if (!c) throw new Error('shared-media grid not found — open chat info, then the Media tab');
-
-    const keys = new Set();
-    const tracker = scroll.makeStabilityTracker({ needed: 3 });
-    c.scrollTop = 0;
-    await sleep(500);
-
-    for (let i = 0; i < 2000; i++) {
-      for (const t of selectors.grid.tiles()) {
-        const k = tileKey(t);
-        if (k) keys.add(k);
-      }
-      if (opts.onCount) opts.onCount(keys.size);
-      c.scrollTop = Math.min(c.scrollHeight, c.scrollTop + Math.max(200, c.clientHeight * 0.8));
-      await sleep(350);
-      if (tracker.push({ scrollTop: c.scrollTop, scrollHeight: c.scrollHeight })) break;
-    }
-    return keys.size;
+    const found = await scanGrid(opts.onCount || null, () => true, null);
+    return found.length;
   }
 
-  // Wipes this chat's download records so its media downloads again.
+  // Wipes this chat's ledger so its media downloads again.
   async function clearChatHistory() {
     const chatId = selectors.chat.id();
     if (!chatId) throw new Error('no chat open');
-    const all = await chrome.storage.local.get(null);
-    const keys = Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0);
-    if (keys.length) await chrome.storage.local.remove(keys);
-    return keys.length;
+    return ledger.forget(chatId);
   }
 
   // How many items of this chat are already recorded as downloaded.
   async function historyCount() {
     const chatId = selectors.chat.id();
     if (!chatId) return 0;
-    const all = await chrome.storage.local.get(null);
-    return Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0).length;
+    await ledger.open(chatId);
+    return ledger.size();
   }
 
   // ------------------------------------------------- save-prompt diagnosis

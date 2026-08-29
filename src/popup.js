@@ -114,10 +114,15 @@ document.getElementById('clearhistory').addEventListener('click', async () => {
     });
     const chatId = results && results[0] && results[0].result;
     if (!chatId) { log('no chat open'); return; }
+    // The chat's ledger, plus any per-item keys left by a version that
+    // predates it and has not been migrated yet.
     const all = await chrome.storage.local.get(null);
-    const keys = Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0);
-    await chrome.storage.local.remove(keys);
-    log('cleared ' + keys.length + ' records for chat ' + chatId);
+    const ledgerKey = 'led:' + chatId;
+    const led = all[ledgerKey];
+    const legacy = Object.keys(all).filter((k) => k.indexOf(chatId + ':') === 0);
+    const n = (led && led.tiles ? Object.keys(led.tiles).length : 0) + legacy.length;
+    await chrome.storage.local.remove([ledgerKey].concat(legacy));
+    log('cleared ' + n + ' records for chat ' + chatId);
   } catch (e) {
     log('FAILED — ' + e.message);
   }
