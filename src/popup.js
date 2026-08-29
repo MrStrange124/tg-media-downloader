@@ -42,6 +42,14 @@ document.getElementById('selftest').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('opensetup').addEventListener('click', async () => {
+  out.textContent = '';
+  await chrome.runtime.sendMessage({ type: 'TGMD_OPEN_SETUP' });
+  log('Opened the save-folder page. Brave ships the File System Access API\n'
+    + 'disabled, so this only works in Chrome. On Brave the fix is instead:\n'
+    + '  brave://settings/downloads -> turn OFF "Ask where to save each file".');
+});
+
 document.getElementById('rundiag').addEventListener('click', async () => {
   out.textContent = 'Running…\n';
   try {

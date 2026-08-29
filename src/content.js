@@ -224,7 +224,11 @@
     }
 
     const blob = await fetchMedia(desc, opts);
+    // Timed because a save dialog is otherwise invisible from in here: a blob
+    // save is milliseconds unless the browser stopped to ask.
+    const saveStarted = Date.now();
     const saved = await saveBlob(blob, filename);
+    const saveMs = Date.now() - saveStarted;
     const written = saved.path || filename;
 
     // Only meaningful for the downloads API: records who Brave credits for the
@@ -238,7 +242,8 @@
     const rec = {};
     rec[record] = written;
     await chrome.storage.local.set(rec);
-    return { ok: true, filename: written, bytes: blob.size, audit: audit, via: saved.mode };
+    return { ok: true, filename: written, bytes: blob.size, audit: audit,
+             via: saved.mode, saveMs: saveMs };
   }
 
   // ------------------------------------------------------------- run engine
@@ -399,7 +404,7 @@
               onEvent({
                 type: 'item', index: summary.total - 1, ok: true,
                 filename: res.filename, skipped: !!res.skipped, audit: res.audit,
-                via: res.via
+                via: res.via, saveMs: res.saveMs
               });
             } catch (e) {
               const msg = String(e && e.message || e);

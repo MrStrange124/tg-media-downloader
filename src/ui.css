@@ -70,3 +70,9 @@
 /* A folder that is not granted means files still go through the download
    system and will prompt, so it must not look like ordinary help text. */
 .tgmd-panel .tgmd-warn { color: #ffb020; font-weight: 600; }
+
+/* Shown only when a save was slow enough to mean a dialog appeared. */
+.tgmd-panel .tgmd-hint {
+  margin-top: 8px; padding: 8px 10px; border-radius: 4px;
+  background: #4a3410; color: #ffcf7a; font-size: 11px; line-height: 1.45;
+}

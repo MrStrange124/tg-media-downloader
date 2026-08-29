@@ -4,9 +4,6 @@
   let el = null;
   let failures = [];
   let running = false;
-  // Cached so a click handler can decide what to do without awaiting first:
-  // opening a folder picker needs the click's transient activation.
-  let folderState = 'none';
 
   const HTML = [
     '<div class="tgmd-head">',
@@ -28,7 +25,7 @@
     '    <button class="tgmd-btn tgmd-sm" data-act="retry">Retry failed</button>',
     '  </div>',
     '  <details class="tgmd-log"><summary>Log</summary><pre></pre></details>',
-    '  <button class="tgmd-link" data-act="folder">Saving to Downloads/Telegram/&lt;group&gt;</button>',
+    '  <div class="tgmd-hint tgmd-hidden"></div>',
     '  <button class="tgmd-link" data-act="clearhistory">Clear history for this chat</button>',
     '  <button class="tgmd-link" data-act="probeprompt">Diagnose the save prompt</button>',
     '</div>'
@@ -50,13 +47,6 @@
     });
 
     refreshHistoryLabel();
-    refreshFolderLabel();
-
-    // Coming back from the setup tab must update this without a page reload.
-    window.addEventListener('focus', () => {
-      if (root.TGMD.core && root.TGMD.core.resetFsState) root.TGMD.core.resetFsState();
-      refreshFolderLabel();
-    });
   }
 
   // ------------------------------------------------------------- rendering
@@ -101,22 +91,21 @@
     }
   }
 
-  async function refreshFolderLabel() {
-    const btn = el && $('[data-act="folder"]');
-    if (!btn) return;
-    // The state lives in the service worker: it owns the folder handle,
-    // because a content script cannot even see the picker API.
-    try {
-      const r = await chrome.runtime.sendMessage({ type: 'TGMD_FS_STATUS' });
-      folderState = (r && r.ok) ? r.state : 'none';
-    } catch (e) {
-      folderState = 'none';
-    }
-    btn.textContent =
-      folderState === 'granted' ? 'Writing straight to your folder \u2014 no prompts. Change\u2026'
-      : folderState === 'prompt' ? 'Folder access expired \u2014 click to re-allow'
-      : 'Brave asks to save every file. Click to pick a folder and stop that.';
-    btn.classList.toggle('tgmd-warn', folderState !== 'granted');
+  // Brave defaults "Ask where to save each file before downloading" to ON,
+  // where Chromium defaults it off, and the pref is absent from Preferences
+  // while it sits at that default -- so it cannot be read, only measured.
+  // A blob download finishes in tens of milliseconds unless a dialog opened.
+  const SLOW_SAVE_MS = 1500;
+
+  function warnIfPrompting(ms) {
+    if (!el || typeof ms !== 'number' || ms < SLOW_SAVE_MS) return;
+    const hint = $('.tgmd-hint');
+    if (!hint || !hint.classList.contains('tgmd-hidden')) return;
+    hint.classList.remove('tgmd-hidden');
+    hint.textContent =
+      'That save took ' + (Math.round(ms / 100) / 10) + 's — Brave is asking where to put '
+      + 'each file. Turn it off: brave://settings/downloads → "Ask where to save each '
+      + 'file before downloading".';
   }
 
   // --------------------------------------------------------------- actions
@@ -134,7 +123,6 @@
     } finally {
       setRunning(false);
       refreshHistoryLabel();
-      refreshFolderLabel();
     }
   }
 
@@ -143,13 +131,6 @@
 
     // Both of these need the click's transient activation, so they run before
     // anything else in this function awaits.
-    // The picker does not exist in a content script, so open the extension's
-    // own page, which can show it.
-    if (act === 'folder') {
-      await chrome.runtime.sendMessage({ type: 'TGMD_OPEN_SETUP' });
-      status('Pick a folder in the tab that just opened, then come back here.');
-      return;
-    }
 
     // Only re-grant an already-chosen folder. Downloads must never be
     // interrupted by a folder picker: the destination is fixed at
@@ -234,9 +215,11 @@
           if (!ev.audit.ours) note = '  [NOT OURS: ' + (ev.audit.byExtensionId || 'page-initiated') + ']';
           else if (ev.audit.danger && ev.audit.danger !== 'safe') note = '  [danger: ' + ev.audit.danger + ']';
         }
-        const via = ev.via === 'disk' ? '  [disk]'
-                  : ev.via === 'downloads' ? '  [downloads — this one can prompt]' : '';
-        logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '') + via + note);
+        const via = ev.via === 'disk' ? '  [disk]' : '';
+        const took = typeof ev.saveMs === 'number' ? '  (' + ev.saveMs + 'ms)' : '';
+        logLine('saved ' + (ev.filename || '') + (ev.skipped ? '  (already had it)' : '')
+                + via + took + note);
+        warnIfPrompting(ev.saveMs);
       } else {
         logLine('FAILED item ' + (ev.index + 1) + ': ' + ev.error);
         if (ev.mediaState) logLine('        state: ' + JSON.stringify(ev.mediaState));
