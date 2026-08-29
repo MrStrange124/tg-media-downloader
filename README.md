@@ -5,9 +5,12 @@ with no recurring browser download prompts.
 
 ## Install
 
-1. `./deploy.sh` from a Mac that can `ssh devbox`
-2. Brave -> `brave://extensions` -> Developer mode -> Load unpacked
-3. Select `C:\Users\AJ\Projects\tg-media-downloader`
+1. Clone this repository
+2. Brave or Chrome -> `brave://extensions` / `chrome://extensions` ->
+   Developer mode -> **Load unpacked**
+3. Select the cloned directory
+
+There is no build step: the extension loads from source as it stands.
 
 ## Use
 
@@ -76,8 +79,10 @@ requests, and whether the save path works. Read it before changing any code.
 
 ## Development
 
-    node --test tests/*.test.js   # 76 unit tests, Node 26+, zero dependencies
-    ./deploy.sh                   # push to devbox
+    node --test tests/*.test.js   # 77 unit tests, Node 26+, zero dependencies
+
+Reload at `brave://extensions` and hard-refresh the Telegram tab to pick up a
+change.
 
 All Telegram DOM knowledge lives in `src/selectors.js`. If a Telegram update
 breaks the extension, that should be the only file needing changes.
