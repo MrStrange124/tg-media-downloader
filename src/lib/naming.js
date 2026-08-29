@@ -46,10 +46,10 @@
     let name = parts.join('_');
     if (!originalName) name += '.' + extFromMime(mime);
 
-    // 'flat' emits no directory component at all. On the target machine every
-    // download whose path contained a subdirectory stopped for a save dialog,
-    // while flat-path downloads completed at normal speed -- so the group is
-    // folded into the filename instead of becoming a folder.
+    // 'flat' emits no directory component at all, folding the group into the
+    // filename. Not needed to avoid save dialogs -- a controlled probe showed
+    // path shape makes no difference -- but kept for anyone who wants a single
+    // folder.
     if (layout === 'flat') {
       return sanitizeSegment('Telegram - ' + folder + ' - ' + name);
     }

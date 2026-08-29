@@ -179,9 +179,11 @@
     const s = got.settings || {};
     return {
       subfolder: naming.sanitizeSegment(s.subfolder || 'Telegram'),
-      // Flat by default: a subdirectory in the target path is the one factor
-      // that correlates with Brave stopping to ask where to save.
-      layout: s.layout === 'nested' ? 'nested' : 'flat'
+      // Nested by default. Flat was only ever a test of the subdirectory
+      // hypothesis, which a controlled probe disproved: on a clean Brave
+      // profile every download shape prompts, and none do once
+      // prompt_for_download is false. Kept as an option, not a default.
+      layout: s.layout === 'flat' ? 'flat' : 'nested'
     };
   }
 

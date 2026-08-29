@@ -77,7 +77,7 @@ document.getElementById('copydiag').addEventListener('click', async () => {
 
 (async function loadLayout() {
   const got = await chrome.storage.local.get('settings');
-  const cur = (got.settings && got.settings.layout) === 'nested' ? 'nested' : 'flat';
+  const cur = (got.settings && got.settings.layout) === 'flat' ? 'flat' : 'nested';
   document.getElementById('layout').value = cur;
 })();
 
