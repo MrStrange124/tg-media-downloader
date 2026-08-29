@@ -86,5 +86,3 @@ change.
 
 All Telegram DOM knowledge lives in `src/selectors.js`. If a Telegram update
 breaks the extension, that should be the only file needing changes.
-
-Architecture and rationale: `docs/superpowers/specs/`, `docs/superpowers/plans/`.
